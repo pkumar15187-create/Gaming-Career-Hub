@@ -1,0 +1,6 @@
+{
+  "name": "Gaming Career Hub",
+  "description": "A futuristic dark-themed gaming career platform where esports athletes build profiles, join teams, register for tournaments, showcase achievements, and connect with sponsors.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
