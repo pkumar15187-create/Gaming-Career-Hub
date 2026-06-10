@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Team, UserProfile } from '../types';
 import { Users, Plus, Star, Shield, Search, Send, Check, X, ShieldAlert, BookOpen, MessageSquare, Gamepad2, UserCheck, Sparkles, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import UploadField from './UploadField';
 
 interface TeamFinderProps {
   teams: Team[];
@@ -167,7 +168,7 @@ export default function TeamFinder({
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-4">
                   <img
-                    src={team.logo}
+                    src={team.logo || "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150"}
                     alt={team.name}
                     referrerPolicy="no-referrer"
                     className="w-14 h-14 rounded-2xl object-cover border border-zinc-800 shrink-0"
@@ -368,13 +369,13 @@ export default function TeamFinder({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-mono font-bold uppercase text-zinc-400 mb-1.5">Team Logotype (Image URL)</label>
-                  <input
-                    type="url"
-                    placeholder="Provide image URL or leave blank for cyber emblem"
-                    className="w-full bg-zinc-950/90 border border-zinc-800 focus:border-cyan-500 rounded-xl px-4 py-2.5 text-xs text-white placeholder-zinc-600 focus:outline-none"
+                  <UploadField 
+                    id="team-logo-upload"
+                    bucketName="team_logos"
+                    label="Team Logotype"
                     value={teamLogo}
-                    onChange={(e) => setTeamLogo(e.target.value)}
+                    onChange={(url) => setTeamLogo(url)}
+                    placeholder="Drop squad logo here, or select"
                   />
                 </div>
 

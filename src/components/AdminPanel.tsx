@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings } from '../types';
-import { ShieldAlert, LogOut, Users, Trophy, DollarSign, Image, Gift, Percent, Plus, Trash, Check, X, Ban, Sparkles, TrendingUp, KeyRound, Sparkle, AlertCircle } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbPayment, DbTournamentRegistration, DbTournamentMatch } from '../types';
+import { supabaseService } from '../lib/supabaseService';
+import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
+import { ShieldAlert, LogOut, Users, Trophy, DollarSign, Image, Gift, Percent, Plus, Trash, Check, X, Ban, Sparkles, TrendingUp, KeyRound, Sparkle, AlertCircle, RefreshCw, Copy, Upload, Search, Filter, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface AdminPanelProps {
@@ -14,18 +16,25 @@ interface AdminPanelProps {
   onBanUser: (userId: string) => void;
   onUnbanUser: (userId: string) => void;
   onToggleFeaturedUser: (userId: string) => void;
+  onToggleFeaturedTeam: (teamId: string) => void;
   onDeleteProfile: (userId: string) => void;
-  onApprovePayment: (userId: string) => void;
-  onRejectPayment: (userId: string) => void;
+  onApprovePayment: (paymentId: string) => Promise<void>;
+  onRejectPayment: (paymentId: string) => Promise<void>;
   onApproveTournamentRegistration: (tourneyId: string, registrantId: string) => void;
   onRejectTournamentRegistration: (tourneyId: string, registrantId: string) => void;
   onApproveSponsorApplication: (applicationId: string) => void;
   onRejectSponsorApplication: (applicationId: string) => void;
   onCreateTournament: (tourney: Omit<Tournament, 'id' | 'registrants' | 'winners' | 'bracket'>) => void;
-  onUpdateQrCode: (newUrl: string) => void;
+  onUpdateQrCode: (newUrl: string, upiId: string) => void;
   onAddCoupon: (code: string, discount: number) => void;
   onRemoveCoupon: (code: string) => void;
   onUpdateAdminSettings: (settings: AdminSettings) => void;
+  onAdminUpdateUserProfile: (userId: string, updatedFields: Partial<UserProfile>) => void;
+  onAdminDeleteTeam: (teamId: string) => void;
+  onAdminDeleteTournament: (tourneyId: string) => void;
+  onUpdateTournament?: (tourneyId: string, updates: Partial<Tournament>) => void;
+  registrations?: DbTournamentRegistration[];
+  onUpdateTournamentRegistrationStatus?: (regId: string, status: 'approved' | 'rejected', paymentStatus?: 'pending' | 'paid' | 'unneeded' | 'rejected') => Promise<void>;
 }
 
 export default function AdminPanel({
@@ -38,6 +47,7 @@ export default function AdminPanel({
   onBanUser,
   onUnbanUser,
   onToggleFeaturedUser,
+  onToggleFeaturedTeam,
   onDeleteProfile,
   onApprovePayment,
   onRejectPayment,
@@ -49,7 +59,13 @@ export default function AdminPanel({
   onUpdateQrCode,
   onAddCoupon,
   onRemoveCoupon,
-  onUpdateAdminSettings
+  onUpdateAdminSettings,
+  onAdminUpdateUserProfile,
+  onAdminDeleteTeam,
+  onAdminDeleteTournament,
+  onUpdateTournament,
+  registrations = [],
+  onUpdateTournamentRegistrationStatus
 }: AdminPanelProps) {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [username, setUsername] = useState('');
@@ -57,7 +73,286 @@ export default function AdminPanel({
   const [loginError, setLoginError] = useState('');
 
   // Tab routing
-  const [activeTab, setActiveTab ] = useState<'analytics' | 'users' | 'tournaments' | 'payments' | 'coupons' | 'sponsors' | 'membership_benefits'>('analytics');
+  const [activeTab, setActiveTab ] = useState<'analytics' | 'users' | 'profiles' | 'teams' | 'tournaments' | 'payments' | 'coupons' | 'sponsors' | 'membership_benefits' | 'diamonds'>('analytics');
+
+  // Diamond Management States
+  const [diamondTransactions, setDiamondTransactions] = useState<any[]>([]);
+  const [selectedAdjustUserId, setSelectedAdjustUserId] = useState('');
+  const [adjustAmount, setAdjustAmount] = useState<number>(10);
+  const [adjustReason, setAdjustReason] = useState('');
+  const [adjustWalletType, setAdjustWalletType] = useState<'topup' | 'winning'>('topup');
+  const [adjustEmail, setAdjustEmail] = useState('');
+
+  // Admin Payout Withdrawals states
+  const [adminWithdrawals, setAdminWithdrawals] = useState<any[]>([]);
+  const [withdrawalRejectNote, setWithdrawalRejectNote] = useState('');
+  const [activeWithdrawalId, setActiveWithdrawalId] = useState<string | null>(null);
+
+  const fetchDiamondTxns = React.useCallback(async () => {
+    try {
+      const data = await supabaseService.getDiamondTransactions();
+      setDiamondTransactions(data);
+    } catch (err) {
+      console.error("Failed to load diamond transactions:", err);
+    }
+  }, []);
+
+  const fetchAdminWithdrawals = React.useCallback(async () => {
+    try {
+      const data = await supabaseService.getWithdrawalRequests();
+      setAdminWithdrawals(data);
+    } catch (err) {
+      console.error("Failed to load withdrawal requests:", err);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (isAdminLoggedIn) {
+      fetchDiamondTxns();
+      fetchAdminWithdrawals();
+    }
+  }, [isAdminLoggedIn, activeTab, fetchDiamondTxns, fetchAdminWithdrawals]);
+
+  const handleApproveDiamondTxn = async (txnId: string) => {
+    try {
+      // 1. read selected diamond_transactions row
+      let txn: any = null;
+      if (isSupabaseConfigured && supabase) {
+        const { data, error } = await supabase
+          .from('diamond_transactions')
+          .select('*')
+          .eq('id', txnId)
+          .maybeSingle();
+        if (error) throw error;
+        txn = data;
+      } else {
+        txn = diamondTransactions.find(t => t.id === txnId);
+      }
+
+      if (!txn) {
+        addToast("Transaction not found", "error");
+        return;
+      }
+
+      // 2. if status already approved, do not credit again
+      if (txn.status === 'approved') {
+        addToast("Diamonds already credited for this transaction.", "info");
+        return;
+      }
+
+      // 3. update users.topup_diamonds = current + total_credited
+      let currentTopup = 0;
+      let currentWinning = 0;
+      const targetUser = users.find(u => u.id === txn.user_id);
+
+      if (isSupabaseConfigured && supabase) {
+        const { data: u, error: uErr } = await supabase
+          .from('users')
+          .select('topup_diamonds, winning_diamonds, diamonds')
+          .eq('id', txn.user_id)
+          .maybeSingle();
+        if (uErr) throw uErr;
+        if (u) {
+          currentTopup = u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : (u.diamonds || 0);
+          currentWinning = u.winning_diamonds || 0;
+        }
+      } else if (targetUser) {
+        currentTopup = targetUser.topup_diamonds !== undefined ? targetUser.topup_diamonds : (targetUser.diamonds || 0);
+        currentWinning = targetUser.winning_diamonds || 0;
+      }
+
+      const totalCredited = Number(txn.total_credited !== undefined ? txn.total_credited : (txn.total_amount !== undefined ? txn.total_amount : txn.diamonds));
+      const nextTopup = currentTopup + totalCredited;
+      const nextDiamonds = nextTopup + currentWinning;
+
+      // Update in Supabase
+      if (isSupabaseConfigured && supabase) {
+        const { error: userErr } = await supabase
+          .from('users')
+          .update({
+            topup_diamonds: nextTopup,
+            diamonds: nextDiamonds
+          })
+          .eq('id', txn.user_id);
+        if (userErr) throw userErr;
+      }
+
+      // 4. update diamond_transactions.status = "approved" and set approved_at = now()
+      const approvedAt = new Date().toISOString();
+      if (isSupabaseConfigured && supabase) {
+        const { error: txErr } = await supabase
+          .from('diamond_transactions')
+          .update({
+            status: 'approved',
+            approved_at: approvedAt
+          })
+          .eq('id', txnId);
+        if (txErr) throw txErr;
+      }
+
+      // Update local storage values to keep non-Supabase mode perfectly synchronized
+      const { loadData, saveData } = await import('../initialData');
+      const localTxns = loadData<any[]>('gh_diamond_transactions', []);
+      const updatedTxns = localTxns.map(x => {
+        if (x.id === txnId) {
+          return { ...x, status: 'approved', approved_at: approvedAt };
+        }
+        return x;
+      });
+      saveData('gh_diamond_transactions', updatedTxns);
+
+      const localUsers = loadData<any[]>('gh_users', []);
+      const updatedLocalUsers = localUsers.map(u => {
+        if (u.id === txn.user_id) {
+          return {
+            ...u,
+            topup_diamonds: nextTopup,
+            diamonds: nextDiamonds
+          };
+        }
+        return u;
+      });
+      saveData('gh_users', updatedLocalUsers);
+
+      // Update local component and application states
+      onAdminUpdateUserProfile(txn.user_id, {
+        topup_diamonds: nextTopup,
+        diamonds: nextDiamonds
+      });
+
+      // 5. show "Diamonds credited successfully"
+      addToast("Diamonds credited successfully", "success");
+
+      // 6. refetch wallet and pending list
+      fetchDiamondTxns();
+      fetchAdminWithdrawals();
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Approval failed.", "error");
+    }
+  };
+
+  const handleRejectDiamondTxn = async (txnId: string) => {
+    try {
+      await supabaseService.updateDiamondTransactionStatus(txnId, 'rejected');
+      addToast("Diamond package transaction declined.", "info");
+      fetchDiamondTxns();
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Deline failed.", "error");
+    }
+  };
+
+  const handleAdjustDiamonds = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    let targetUser: UserProfile | undefined = undefined;
+
+    // First try finding by typed email if present
+    if (adjustEmail.trim()) {
+      targetUser = users.find(u => u.email?.toLowerCase().trim() === adjustEmail.toLowerCase().trim());
+    }
+
+    // Fallback to selected dropdown ID if needed
+    if (!targetUser && selectedAdjustUserId) {
+      targetUser = users.find(u => u.id === selectedAdjustUserId);
+    }
+
+    if (!targetUser) {
+      addToast("Please select a member profile or enter a valid registered Email!", "warning");
+      return;
+    }
+
+    if (adjustAmount === 0) {
+      addToast("Adjustment amount must not be zero!", "warning");
+      return;
+    }
+
+    try {
+      await supabaseService.adjustDiamondsManually(
+        targetUser.id,
+        adjustAmount,
+        adjustWalletType,
+        adjustReason || `Admin manual credit (${adjustWalletType})`
+      );
+      
+      const currentTopup = targetUser.topup_diamonds !== undefined ? targetUser.topup_diamonds : (targetUser.diamonds || 0);
+      const currentWinning = targetUser.winning_diamonds || 0;
+      
+      if (adjustWalletType === 'topup') {
+        const nextTopup = currentTopup + adjustAmount;
+        onAdminUpdateUserProfile(targetUser.id, {
+          topup_diamonds: nextTopup,
+          diamonds: nextTopup + currentWinning
+        });
+      } else {
+        const nextWinning = currentWinning + adjustAmount;
+        onAdminUpdateUserProfile(targetUser.id, {
+          winning_diamonds: nextWinning,
+          diamonds: currentTopup + nextWinning
+        });
+      }
+
+      addToast(`Adjusted balance by ${adjustAmount} ${adjustWalletType} Diamonds for ${targetUser.gamerName}!`, "success");
+      setAdjustReason('');
+      fetchDiamondTxns();
+    } catch (err: any) {
+      console.error(err);
+      addToast("Manual adjustment on database failed.", "error");
+    }
+  };
+
+  const handleApproveWithdrawal = async (reqId: string, note?: string) => {
+    try {
+      await supabaseService.updateWithdrawalRequestStatus(reqId, 'approved', note || "Approved. Awaiting payment dispatch.");
+      addToast("Withdrawal request stands APPROVED! Mark as paid when UPI cash is sent.", "success");
+      fetchAdminWithdrawals();
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to approve withdrawal.", "error");
+    }
+  };
+
+  const handleRejectWithdrawal = async (reqId: string, reason: string) => {
+    if (!reason.trim()) {
+      addToast("Please input a cancellation reason first!", "warning");
+      return;
+    }
+    try {
+      await supabaseService.updateWithdrawalRequestStatus(reqId, 'rejected', reason);
+      addToast("Withdrawal request has been successfully REJECTED.", "info");
+      setActiveWithdrawalId(null);
+      setWithdrawalRejectNote('');
+      fetchAdminWithdrawals();
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to reject withdrawal.", "error");
+    }
+  };
+
+  const handleMarkPaidWithdrawal = async (reqId: string, note?: string) => {
+    try {
+      await supabaseService.updateWithdrawalRequestStatus(reqId, 'paid', note || "Winning Reward successfully dispatched via instant UPI.");
+      addToast("Withdrawal marked as PAID. Winning Balance deducted.", "success");
+      fetchAdminWithdrawals();
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to process paid state.", "error");
+    }
+  };
+
+  // Profile editing inputs state
+  const [editingUserProfileId, setEditingUserProfileId] = useState<string | null>(null);
+  const [editGamerName, setEditGamerName] = useState('');
+  const [editBio, setEditBio] = useState('');
+  const [editSkillRating, setEditSkillRating] = useState(1500);
+  const [editKdRatio, setEditKdRatio] = useState(1.0);
+  const [editCity, setEditCity] = useState('');
+  const [editCountry, setEditCountry] = useState('');
+  const [editMembership, setEditMembership] = useState<'Free' | 'Silver' | 'Gold' | 'Platinum'>('Free');
+
+  // Delete team confirm popup ID
+  const [deleteTeamConfirmId, setDeleteTeamConfirmId] = useState<string | null>(null);
 
   // New Tournament States
   const [newTourneyTitle, setNewTourneyTitle] = useState('');
@@ -67,6 +362,43 @@ export default function AdminPanel({
   const [newTourneyRegType, setNewTourneyRegType] = useState<'solo' | 'team'>('team');
   const [newTourneyRules, setNewTourneyRules] = useState('');
   const [newTourneySchedule, setNewTourneySchedule] = useState('');
+  const [newTourneyBannerUrl, setNewTourneyBannerUrl] = useState('');
+  const [newTourneyEntryFee, setNewTourneyEntryFee] = useState('Free');
+  const [newTourneyDescription, setNewTourneyDescription] = useState('');
+  const [newTourneyRegDeadline, setNewTourneyRegDeadline] = useState('');
+  const [newTourneyStart, setNewTourneyStart] = useState('');
+  const [newTourneyEnd, setNewTourneyEnd] = useState('');
+  const [newTourneyMaxPlayers, setNewTourneyMaxPlayers] = useState('100');
+
+  // Registrations search/filter states
+  const [regSearch, setRegSearch] = useState('');
+  const [regStatusFilter, setRegStatusFilter] = useState('all');
+  const [regTourneyFilter, setRegTourneyFilter] = useState('all');
+  const [viewScreenshotUrl, setViewScreenshotUrl] = useState<string | null>(null);
+
+  // Phase 6.3 Tournament Bracket States
+  const [selectedBracketTourneyId, setSelectedBracketTourneyId] = useState<string | null>(null);
+  const [matchesMap, setMatchesMap] = useState<Record<string, DbTournamentMatch[]>>({});
+  const [bracketSlotLimit, setBracketSlotLimit] = useState<number>(8);
+  const [isUpdatingMatchStatus, setIsUpdatingMatchStatus] = useState<string | null>(null);
+
+  // Editing existing tournament state variables
+  const [editingTourney, setEditingTourney] = useState<Tournament | null>(null);
+  const [editTourneyTitle, setEditTourneyTitle] = useState('');
+  const [editTourneyGame, setEditTourneyGame] = useState('Valorant');
+  const [editTourneyPrize, setEditTourneyPrize] = useState('');
+  const [editTourneyMaxTeams, setEditTourneyMaxTeams] = useState('16');
+  const [editTourneyRegType, setEditTourneyRegType] = useState<'solo' | 'team'>('team');
+  const [editTourneyRules, setEditTourneyRules] = useState('');
+  const [editTourneySchedule, setEditTourneySchedule] = useState('');
+  const [editTourneyStatus, setEditTourneyStatus] = useState<'upcoming' | 'ongoing' | 'completed' | 'live' | 'cancelled'>('upcoming');
+  const [editTourneyBannerUrl, setEditTourneyBannerUrl] = useState('');
+  const [editTourneyEntryFee, setEditTourneyEntryFee] = useState('Free');
+  const [editTourneyDescription, setEditTourneyDescription] = useState('');
+  const [editTourneyRegDeadline, setEditTourneyRegDeadline] = useState('');
+  const [editTourneyStart, setEditTourneyStart] = useState('');
+  const [editTourneyEnd, setEditTourneyEnd] = useState('');
+  const [editTourneyMaxPlayers, setEditTourneyMaxPlayers] = useState('100');
 
   // Coupon addition states
   const [couponCode, setCouponCode] = useState('');
@@ -74,6 +406,9 @@ export default function AdminPanel({
 
   // QR config
   const [qrCodeInput, setQrCodeInput] = useState(adminSettings.qrCodeUrl);
+  const [upiIdInput, setUpiIdInput] = useState(adminSettings.upiId || 'careerhub@ybl');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingQr, setUploadingQr] = useState(false);
 
   // Dynamic Premium Catalog Creation States
   const [badgeName, setBadgeName] = useState('');
@@ -96,6 +431,67 @@ export default function AdminPanel({
   const [rewardTier, setRewardTier] = useState<'Silver' | 'Gold' | 'Platinum' | 'All'>('Silver');
   const [rewardDesc, setRewardDesc] = useState('');
 
+  // Platinum administrative theme states
+  const [platinumUploadUrl, setPlatinumUploadUrl] = useState('');
+  const [platinumUploadType, setPlatinumUploadType] = useState<'background' | 'overlay' | 'card'>('background');
+  const [uploadingThemeAsset, setUploadingThemeAsset] = useState(false);
+
+  const handleThemeAssetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingThemeAsset(true);
+    try {
+      if (isSupabaseConfigured && supabase) {
+        const fileExt = file.name.split('.').pop();
+        const customPath = `${platinumUploadType}-${Date.now()}-${Math.floor(Math.random() * 100000)}.${fileExt}`;
+
+        let { data, error } = await supabase.storage
+          .from('platinum_profile_themes')
+          .upload(customPath, file, {
+            cacheControl: '3600',
+            upsert: true
+          });
+
+        if (error && (error.message?.toLowerCase().includes('bucket') || (error as any).status === 404)) {
+          try {
+            console.warn("Bucket platinum_profile_themes not found. Creating bucket dynamically...");
+            await supabase.storage.createBucket('platinum_profile_themes', { public: true });
+            
+            const retryResult = await supabase.storage
+              .from('platinum_profile_themes')
+              .upload(customPath, file, {
+                cacheControl: '3600',
+                upsert: true
+              });
+            data = retryResult.data;
+            error = retryResult.error;
+          } catch (createErr) {
+            console.error("Self-healing bucket creation failed:", createErr);
+          }
+        }
+
+        if (error) throw error;
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('platinum_profile_themes')
+          .getPublicUrl(customPath);
+
+        setPlatinumUploadUrl(publicUrl);
+        addToast(`Theme asset successfully registered: ${publicUrl}`, "success");
+      } else {
+        const dummyUrl = URL.createObjectURL(file);
+        setPlatinumUploadUrl(dummyUrl);
+        addToast("Local mock preview URL generated. Backend storage offline.", "info");
+      }
+    } catch (err: any) {
+      console.error(err);
+      addToast(`Upload failed: ${err.message}`, "error");
+    } finally {
+      setUploadingThemeAsset(false);
+    }
+  };
+
   // Delete confirm popups states
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
@@ -108,6 +504,7 @@ export default function AdminPanel({
       addToast("Administrative authentication successful! Welcome Commander.", "success");
     } else {
       setLoginError('Wrong username or password');
+      setPassword('');
       addToast("Authentication request rejected.", "error");
     }
   };
@@ -117,6 +514,95 @@ export default function AdminPanel({
     setUsername('');
     setPassword('');
     addToast("Administrative session closed safely.", "info");
+  };
+
+  const handleExportCSV = () => {
+    const headers = ["ID", "Gamer Tag", "Email", "City", "Country", "MMR/Skill Rating", "KD Ratio", "Membership", "Status", "Is Featured", "Is Banned"];
+    const rows = users.map(u => [
+      u.id,
+      u.gamerName,
+      u.email,
+      u.city,
+      u.country,
+      u.skillRating,
+      u.kdRatio,
+      u.membership,
+      u.membershipStatus,
+      u.isFeatured ? "Yes" : "No",
+      u.isBanned ? "Yes" : "No"
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + [headers.join(","), ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(","))].join("\n");
+    
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Gaming_Career_Hub_Users_Export_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    addToast("Player files successfully compiled and exported as CSV format.", "success");
+  };
+
+  const handleExportTeamsCSV = () => {
+    const headers = ["Team ID", "Name", "Game Category", "Required Role", "Rank Index", "Leader Tag", "Total Members", "Pending Applications"];
+    const rows = teams.map(t => [
+      t.id,
+      t.name,
+      t.game,
+      t.requiredRole,
+      t.ranking,
+      t.creatorGamerName,
+      t.members.length,
+      t.pendingRequests ? t.pendingRequests.length : 0
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + [headers.join(","), ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(","))].join("\n");
+    
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Gaming_Career_Hub_Teams_Export_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    addToast("Teams registry compiled and exported as CSV format.", "success");
+  };
+
+  const handleExportPaymentsCSV = () => {
+    const headers = ["User ID", "Gamer Name", "Email", "Membership Level", "Status", "Transaction ID", "Screenshot reference"];
+    const subscriptedUsers = users.filter(u => u.membershipStatus === 'active' || u.membershipStatus === 'pending');
+    const rows = subscriptedUsers.map(u => [
+      u.id,
+      u.gamerName,
+      u.email,
+      u.membership,
+      u.membershipStatus,
+      u.membershipTxId || "N/A",
+      u.membershipScreenshot || "N/A"
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + [headers.join(","), ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(","))].join("\n");
+    
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Gaming_Career_Hub_Invoices_Export_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    addToast("Subscription & payment ledgers exported as CSV.", "success");
+  };
+
+  const handleResetDemoData = () => {
+    if (confirm("Are you sure you want to reset all data registers? This restores database back to factory initial states.")) {
+      localStorage.clear();
+      window.location.hash = '#home';
+      window.location.reload();
+    }
   };
 
   // Tournament submit handler
@@ -143,17 +629,239 @@ export default function AdminPanel({
       title: newTourneyTitle,
       game: newTourneyGame,
       prizePool: newTourneyPrize,
-      maxTeams: parseInt(newTourneyMaxTeams) || 16,
+      prize_pool: newTourneyPrize,
+      max_teams: parseInt(newTourneyMaxTeams) || 16,
       registrationType: newTourneyRegType,
       status: 'upcoming',
       rules: rulesList.length > 0 ? rulesList : ["1. Fairplay mandatory.", "2. Double check schedules."],
-      schedule: scheduleItems
+      schedule: scheduleItems,
+      banner_url: newTourneyBannerUrl,
+      entry_fee: newTourneyEntryFee,
+      description: newTourneyDescription,
+      registration_deadline: newTourneyRegDeadline,
+      tournament_start: newTourneyStart,
+      tournament_end: newTourneyEnd,
+      max_players: parseInt(newTourneyMaxPlayers) || 100
     });
 
     addToast(`Successfully configured brand new tournament "${newTourneyTitle}"`, "success");
     setNewTourneyTitle('');
     setNewTourneyRules('');
     setNewTourneySchedule('');
+    setNewTourneyBannerUrl('');
+    setNewTourneyEntryFee('Free');
+    setNewTourneyDescription('');
+    setNewTourneyRegDeadline('');
+    setNewTourneyStart('');
+    setNewTourneyEnd('');
+    setNewTourneyMaxPlayers('100');
+  };
+
+  const handleStartEditTourney = (tourney: Tournament) => {
+    setEditingTourney(tourney);
+    setEditTourneyTitle(tourney.title);
+    setEditTourneyGame(tourney.game);
+    setEditTourneyPrize(tourney.prizePool || tourney.prize_pool || '');
+    setEditTourneyMaxTeams(String(tourney.max_teams || 16));
+    setEditTourneyRegType(tourney.registrationType || 'team');
+    setEditTourneyRules(tourney.rules?.join('\n') || '');
+    const scheduleStr = tourney.schedule?.map(s => `${s.date}: ${s.event}`).join(', ') || '';
+    setEditTourneySchedule(scheduleStr);
+    setEditTourneyStatus(tourney.status || 'upcoming');
+    setEditTourneyBannerUrl(tourney.banner_url || '');
+    setEditTourneyEntryFee(tourney.entry_fee || 'Free');
+    setEditTourneyDescription(tourney.description || '');
+    setEditTourneyRegDeadline(tourney.registration_deadline || '');
+    setEditTourneyStart(tourney.tournament_start || '');
+    setEditTourneyEnd(tourney.tournament_end || '');
+    setEditTourneyMaxPlayers(String(tourney.max_players || 100));
+  };
+
+  const handleEditTourneySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTourney) return;
+    if (!editTourneyTitle.trim()) {
+      addToast("Tournament title is mandated!", "warning");
+      return;
+    }
+
+    const scheduleItems = editTourneySchedule.split(',').map((item, idx) => {
+      const parts = item.split(':');
+      return {
+        date: parts[0]?.trim() || "2026-06-15",
+        event: parts[1]?.trim() || "Round robin match"
+      };
+    });
+
+    const rulesList = editTourneyRules.split('\n').filter(r => r.trim().length > 0);
+
+    const updates: Partial<Tournament> = {
+      title: editTourneyTitle,
+      game: editTourneyGame,
+      prizePool: editTourneyPrize,
+      prize_pool: editTourneyPrize,
+      max_teams: parseInt(editTourneyMaxTeams) || 16,
+      registrationType: editTourneyRegType,
+      status: editTourneyStatus,
+      rules: rulesList,
+      schedule: scheduleItems,
+      banner_url: editTourneyBannerUrl,
+      entry_fee: editTourneyEntryFee,
+      description: editTourneyDescription,
+      registration_deadline: editTourneyRegDeadline,
+      tournament_start: editTourneyStart,
+      tournament_end: editTourneyEnd,
+      max_players: parseInt(editTourneyMaxPlayers) || 100
+    };
+
+    if (onUpdateTournament) {
+      onUpdateTournament(editingTourney.id, updates);
+    } else {
+      addToast("Update hook not wired, saving fallback locally.", "info");
+    }
+
+    setEditingTourney(null);
+  };
+
+  // Process and load bracket match trackers
+  const loadMatchesForTournament = async (tourneyId: string) => {
+    try {
+      const loaded = await supabaseService.getTournamentMatches(tourneyId);
+      setMatchesMap(prev => ({ ...prev, [tourneyId]: loaded }));
+    } catch (err) {
+      console.error("Failed loading matches:", err);
+    }
+  };
+
+  const handleSelectBracketTourney = async (tourneyId: string) => {
+    if (selectedBracketTourneyId === tourneyId) {
+      setSelectedBracketTourneyId(null);
+      return;
+    }
+    setSelectedBracketTourneyId(tourneyId);
+    await loadMatchesForTournament(tourneyId);
+  };
+
+  // Generate bracket single elimination
+  const handleGenerateBracket = async (tourneyId: string, slotLimit: number, regType: 'solo' | 'team') => {
+    try {
+      const approvedRegs = (registrations || []).filter(
+        r => r.tournament_id === tourneyId && r.status === 'approved'
+      );
+
+      if (approvedRegs.length === 0) {
+        addToast("Cannot generate bracket: No approved registrations found for this tournament.", "error");
+        return;
+      }
+
+      const matches: DbTournamentMatch[] = [];
+
+      // 1. Generate Round 1 matches
+      const numMatchesR1 = slotLimit / 2;
+      for (let m = 0; m < numMatchesR1; m++) {
+        const idx1 = 2 * m;
+        const idx2 = 2 * m + 1;
+
+        const reg1 = idx1 < approvedRegs.length ? approvedRegs[idx1] : null;
+        const reg2 = idx2 < approvedRegs.length ? approvedRegs[idx2] : null;
+
+        const matchId = `match-${tourneyId}-1-${m+1}`;
+        matches.push({
+          id: matchId,
+          tournamentId: tourneyId,
+          roundNumber: 1,
+          matchNumber: m + 1,
+          player1UserId: regType === 'solo' ? (reg1 ? reg1.user_id : null) : null,
+          player2UserId: regType === 'solo' ? (reg2 ? reg2.user_id : null) : null,
+          team1Id: regType === 'team' ? (reg1 ? reg1.team_id : null) : null,
+          team2Id: regType === 'team' ? (reg2 ? reg2.team_id : null) : null,
+          status: 'pending'
+        });
+      }
+
+      // 2. Generate subsequent rounds (e.g. Round 2, Round 3, etc.)
+      const numRounds = Math.log2(slotLimit);
+      for (let r = 2; r <= numRounds; r++) {
+        const numMatchesForRound = slotLimit / Math.pow(2, r);
+        for (let m = 0; m < numMatchesForRound; m++) {
+          const matchId = `match-${tourneyId}-${r}-${m+1}`;
+          matches.push({
+            id: matchId,
+            tournamentId: tourneyId,
+            roundNumber: r,
+            matchNumber: m + 1,
+            player1UserId: null,
+            player2UserId: null,
+            team1Id: null,
+            team2Id: null,
+            status: 'pending'
+          });
+        }
+      }
+
+      const success = await supabaseService.saveTournamentMatches(tourneyId, matches);
+      if (success) {
+        addToast(`Successfully generated ${slotLimit}-slot bracket with ${approvedRegs.length} participants!`, "success");
+        await loadMatchesForTournament(tourneyId);
+      } else {
+        addToast("Failed to save matches.", "error");
+      }
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to generate bracket.", "error");
+    }
+  };
+
+  // Reset bracket
+  const handleResetBracket = async (tourneyId: string) => {
+    if (!confirm("Are you sure you want to completely erase the matches/bracket for this tournament? This cannot be undone.")) {
+      return;
+    }
+    try {
+      const success = await supabaseService.resetTournamentMatches(tourneyId);
+      if (success) {
+        addToast("Bracket reset successfully.", "success");
+        setMatchesMap(prev => ({ ...prev, [tourneyId]: [] }));
+      } else {
+        addToast("Failed to reset matches.", "error");
+      }
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to reset bracket.", "error");
+    }
+  };
+
+  // Update specific match status or winner
+  const handleUpdateMatch = async (
+    matchId: string, 
+    tourneyId: string, 
+    status: 'pending' | 'live' | 'completed',
+    winnerId: string | null
+  ) => {
+    setIsUpdatingMatchStatus(matchId);
+    try {
+      const tourney = tournaments.find(t => t.id === tourneyId);
+      const isSolo = tourney ? (tourney.registrationType === 'solo') : true;
+
+      const success = await supabaseService.updateMatchStatus(
+        matchId, 
+        status, 
+        isSolo ? winnerId : null, 
+        isSolo ? null : winnerId
+      );
+
+      if (success) {
+        addToast("Match details updated successfully.", "success");
+        await loadMatchesForTournament(tourneyId);
+      } else {
+        addToast("Failed to update match.", "error");
+      }
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to update match.", "error");
+    } finally {
+      setIsUpdatingMatchStatus(null);
+    }
   };
 
   const submitAddCoupon = (e: React.FormEvent) => {
@@ -166,11 +874,73 @@ export default function AdminPanel({
     setCouponCode('');
   };
 
+  const handleQrFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setUploadingQr(true);
+      try {
+        if (isSupabaseConfigured && supabase) {
+          const fileExt = file.name.split('.').pop();
+          const customPath = `qr-${Date.now()}-${Math.floor(Math.random() * 100000)}.${fileExt}`;
+
+          let { data, error } = await supabase.storage
+            .from('payment_qr')
+            .upload(customPath, file, {
+              cacheControl: '3600',
+              upsert: true
+            });
+
+          if (error && (error.message?.toLowerCase().includes('bucket') || (error as any).status === 404)) {
+            try {
+              console.warn("Bucket payment_qr not found. Creating bucket dynamically...");
+              await supabase.storage.createBucket('payment_qr', { public: true });
+              
+              const retryResult = await supabase.storage
+                .from('payment_qr')
+                .upload(customPath, file, {
+                  cacheControl: '3600',
+                  upsert: true
+                });
+              data = retryResult.data;
+              error = retryResult.error;
+            } catch (createErr) {
+              console.error("Self-healing bucket creation in AdminPanel failed:", createErr);
+            }
+          }
+
+          if (error) {
+            throw error;
+          }
+
+          const { data: { publicUrl } } = supabase.storage
+            .from('payment_qr')
+            .getPublicUrl(customPath);
+
+          setQrCodeInput(publicUrl);
+          addToast("Payment QR uploaded successfully! Click save below to finalize.", "success");
+        } else {
+          // Fallback static Base64 for LocalStorage
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            if (typeof reader.result === 'string') {
+              setQrCodeInput(reader.result);
+              addToast("Payment QR converted to Base64! Click save below to finalize.", "success");
+            }
+          };
+          reader.readAsDataURL(file);
+        }
+      } catch (err: any) {
+        console.error("Failed uploading QR scanner:", err);
+        addToast(`Failed uploading QR scanner: ${err.message || 'Server error'}`, "error");
+      } finally {
+        setUploadingQr(false);
+      }
+    }
+  };
+
   const submitQrCodeUpdate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!qrCodeInput.trim()) return;
-    onUpdateQrCode(qrCodeInput);
-    addToast("Core dynamic UPI QR gateway updated!", "success");
+    onUpdateQrCode(qrCodeInput, upiIdInput);
   };
 
   // Submit handlers for Premium catalogs
@@ -342,10 +1112,67 @@ export default function AdminPanel({
 
   // Metrics calculators
   const premiumUsersCount = users.filter(u => u.membership !== 'Free' && u.membershipStatus === 'active').length;
-  const pendingPayments = users.filter(u => u.membershipStatus === 'pending');
+
+  // Load payments from Database
+  const [pendingPaymentsList, setPendingPaymentsList] = useState<DbPayment[]>(() => {
+    const pendingFromUsers = users.filter(u => u.membershipStatus === 'pending');
+    return pendingFromUsers.map(u => ({
+      id: u.id,
+      userId: u.id,
+      userEmail: u.email || 'gamer@careerhub.gg',
+      plan: u.membership === 'Free' ? 'Gold' : u.membership as any,
+      amount: u.membership === 'Silver' ? 19 : u.membership === 'Gold' ? 49 : 99,
+      transactionId: u.membershipTxId || 'MANUAL-ENTRY',
+      status: 'pending',
+      screenshotUrl: u.membershipScreenshot,
+      createdAt: new Date().toISOString()
+    }));
+  });
+
+  const fetchPendingPaymentsList = async () => {
+    try {
+      const list = await supabaseService.getPendingPayments();
+      setPendingPaymentsList(list);
+    } catch (err) {
+      console.error("Failed fetching pending payments list in view:", err);
+    }
+  };
+
+  React.useEffect(() => {
+    if (isAdminLoggedIn) {
+      fetchPendingPaymentsList();
+    }
+  }, [isAdminLoggedIn]);
+
+  React.useEffect(() => {
+    if (isAdminLoggedIn && activeTab === 'payments') {
+      fetchPendingPaymentsList();
+    }
+  }, [activeTab, isAdminLoggedIn]);
+
+  const handleApprove = async (paymentId: string) => {
+    try {
+      await onApprovePayment(paymentId);
+      await fetchPendingPaymentsList();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleReject = async (paymentId: string) => {
+    try {
+      await onRejectPayment(paymentId);
+      await fetchPendingPaymentsList();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const pendingPayments = pendingPaymentsList;
+
   const totalEsportsRevenue = users.reduce((acc, curr) => {
     if (curr.membershipStatus !== 'active') return acc;
-    const tierPricing = { Free: 0, Silver: 49, Gold: 99, Platinum: 199 };
+    const tierPricing = { Free: 0, Silver: 19, Gold: 49, Platinum: 99 };
     return acc + (tierPricing[curr.membership] || 0);
   }, 0);
 
@@ -451,6 +1278,22 @@ export default function AdminPanel({
           PLAYER MANAGE
         </button>
         <button
+          onClick={() => setActiveTab('profiles')}
+          className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition-all ${
+            activeTab === 'profiles' ? 'bg-red-600 text-white shadow' : 'text-zinc-400 hover:text-white'
+          }`}
+        >
+          GAMER PROFILES
+        </button>
+        <button
+          onClick={() => setActiveTab('teams')}
+          className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition-all ${
+            activeTab === 'teams' ? 'bg-red-650 bg-red-600 text-white shadow' : 'text-zinc-400 hover:text-white'
+          }`}
+        >
+          TEAMS COALITION
+        </button>
+        <button
           onClick={() => setActiveTab('tournaments')}
           className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition-all ${
             activeTab === 'tournaments' ? 'bg-red-600 text-white shadow' : 'text-zinc-400 hover:text-white'
@@ -500,13 +1343,62 @@ export default function AdminPanel({
         >
           👑 BENEFITS MANAGER
         </button>
+        <button
+          onClick={() => setActiveTab('diamonds')}
+          className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition-all relative ${
+            activeTab === 'diamonds' ? 'bg-red-650 bg-red-600 text-white shadow' : "text-zinc-400 hover:text-white"
+          }`}
+        >
+          💎 DIAMOND VAULT
+          {diamondTransactions.filter(d => d.status === 'pending').length > 0 && (
+            <span className="absolute -top-1.5 -right-1 bg-amber-500 text-black font-black font-mono text-[9px] w-5 h-5 rounded-full flex items-center justify-center border-2 border-zinc-900 animate-pulse">
+              {diamondTransactions.filter(d => d.status === 'pending').length}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Tab Panels */}
       <div className="p-6 bg-zinc-900/60 border border-zinc-805/85 rounded-2xl backdrop-blur-xl">
         {activeTab === 'analytics' && (
           <div className="space-y-6">
-            <h3 className="text-base font-extrabold text-white uppercase tracking-wide border-b border-zinc-800/40 pb-2">High-impact Intelligence Metric Summary</h3>
+            <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center w-full pb-4 gap-4 border-b border-zinc-805">
+              <div>
+                <h3 className="text-base font-extrabold text-white uppercase tracking-wide">High-impact Intelligence Metric Summary</h3>
+                <p className="text-[10px] text-zinc-500 font-mono mt-0.5">Statistical insights from Gaming Career Hub core registry</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={handleExportCSV}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-mono font-black text-[10px] px-3.5 py-2 rounded-xl flex items-center gap-1 transition-all cursor-pointer shadow-md shadow-emerald-500/5 uppercase"
+                >
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  EXPORT USERS CSV
+                </button>
+                <button
+                  onClick={handleExportTeamsCSV}
+                  className="bg-blue-500 hover:bg-blue-600 text-zinc-950 font-mono font-black text-[10px] px-3.5 py-2 rounded-xl flex items-center gap-1 transition-all cursor-pointer shadow-md shadow-blue-500/5 uppercase"
+                >
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  EXPORT TEAMS CSV
+                </button>
+                <button
+                  onClick={handleExportPaymentsCSV}
+                  className="bg-indigo-500 hover:bg-indigo-600 text-zinc-950 font-mono font-black text-[10px] px-3.5 py-2 rounded-xl flex items-center gap-1 transition-all cursor-pointer shadow-md shadow-indigo-500/5 uppercase"
+                >
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  EXPORT PAYMENTS CSV
+                </button>
+                <button
+                  onClick={handleResetDemoData}
+                  className="bg-rose-600 hover:bg-rose-700 text-white font-mono font-black text-[10px] px-3.5 py-2 rounded-xl flex items-center gap-1 transition-all cursor-pointer shadow-md shadow-rose-600/5 border border-rose-500/20 uppercase"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  RESET DATABASE
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="bg-zinc-950 p-4 border border-zinc-800 rounded-xl">
                 <p className="text-[10px] font-mono text-zinc-500 uppercase">Registered Operatives</p>
@@ -528,6 +1420,184 @@ export default function AdminPanel({
                 <p className="text-3xl font-black text-emerald-400 mt-1 font-display">₹{totalEsportsRevenue}</p>
                 <span className="text-[10px] text-zinc-500 block mt-1">Calculated verified pass subscriptions</span>
               </div>
+            </div>
+
+            {/* Visual Charts section */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Chart A: Membership Tier Breakdown */}
+              <div className="bg-zinc-950/80 border border-zinc-850 p-5 rounded-2xl">
+                <h4 className="text-xs font-bold font-mono text-zinc-400 uppercase tracking-widest mb-4">REVENUE GEN & PREMIUM TICKETS SPLIT</h4>
+                {(() => {
+                  const silverCount = users.filter(u => u.membership === 'Silver').length;
+                  const goldCount = users.filter(u => u.membership === 'Gold').length;
+                  const platinumCount = users.filter(u => u.membership === 'Platinum').length;
+                  const freeCount = users.length - silverCount - goldCount - platinumCount;
+                  const total = users.length || 1;
+
+                  const pFree = Math.round((freeCount / total) * 100);
+                  const pSilver = Math.round((silverCount / total) * 100);
+                  const pGold = Math.round((goldCount / total) * 100);
+                  const pPlatinum = Math.round((platinumCount / total) * 100);
+
+                  return (
+                    <div className="flex flex-col sm:flex-row items-center gap-6">
+                      <div className="relative w-36 h-36 flex items-center justify-center">
+                        {/* Elegant interactive visual circle doughnut graph */}
+                        <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                          {/* Outer free tier */}
+                          <circle cx="50" cy="50" r="40" fill="transparent" stroke="#27272a" strokeWidth="12" />
+                          <circle cx="50" cy="50" r="38" fill="transparent" stroke="#3b82f6" strokeWidth="4" strokeDasharray={`${pFree} 100`} strokeDashoffset="0" />
+                          <circle cx="50" cy="50" r="32" fill="transparent" stroke="#a855f7" strokeWidth="4" strokeDasharray={`${pSilver} 100`} strokeDashoffset="0" />
+                          <circle cx="50" cy="50" r="26" fill="transparent" stroke="#eab308" strokeWidth="4" strokeDasharray={`${pGold} 100`} strokeDashoffset="0" />
+                          <circle cx="50" cy="50" r="20" fill="transparent" stroke="#f43f5e" strokeWidth="4" strokeDasharray={`${pPlatinum} 100`} strokeDashoffset="0" />
+                        </svg>
+                        <div className="absolute inset-0 flex flex-col justify-center items-center text-center">
+                          <span className="text-xl font-black text-white font-mono">{premiumUsersCount}</span>
+                          <span className="text-[9px] text-zinc-500 font-mono uppercase font-bold">PREMIUMS</span>
+                        </div>
+                      </div>
+
+                      <div className="flex-1 space-y-2.5 w-full font-mono text-zinc-350">
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-blue-500 rounded-full"></span> Regular Free ({freeCount})</span>
+                          <span className="font-bold text-white">{pFree}%</span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-purple-500 rounded-full"></span> Silver Pass ({silverCount})</span>
+                          <span className="font-bold text-white">{pSilver}%</span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-yellow-500 rounded-full"></span> Gold Pass ({goldCount})</span>
+                          <span className="font-bold text-white">{pGold}%</span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-rose-500 rounded-full"></span> Platinum VIP ({platinumCount})</span>
+                          <span className="font-bold text-white">{pPlatinum}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Chart B: KD Spread Distribution mapping */}
+              <div className="bg-zinc-950/80 border border-zinc-850 p-5 rounded-2xl">
+                <h4 className="text-xs font-bold font-mono text-zinc-400 uppercase tracking-widest mb-4">GAMES K/D CALIBRATION SPREAD</h4>
+                {(() => {
+                  const kdRecruit = users.filter(u => u.kdRatio < 1.0).length;
+                  const kdCombatant = users.filter(u => u.kdRatio >= 1.0 && u.kdRatio < 1.8).length;
+                  const kdSpecialist = users.filter(u => u.kdRatio >= 1.8 && u.kdRatio < 3.0).length;
+                  const kdLegend = users.filter(u => u.kdRatio >= 3.0).length;
+
+                  const maxCount = Math.max(kdRecruit, kdCombatant, kdSpecialist, kdLegend, 1);
+
+                  const bars = [
+                    { label: "RECRUIT (<1.0)", count: kdRecruit, color: "bg-zinc-750 bg-zinc-700" },
+                    { label: "COMBATANT (1.0-1.8)", count: kdCombatant, color: "bg-cyan-500" },
+                    { label: "SPECIALIST (1.8-3.0)", count: kdSpecialist, color: "bg-purple-500" },
+                    { label: "LEGEND (3.0+)", count: kdLegend, color: "bg-rose-500" }
+                  ];
+
+                  return (
+                    <div className="space-y-4">
+                      {bars.map((b, idx) => {
+                        const pctWidth = (b.count / maxCount) * 100;
+                        return (
+                          <div key={idx} className="space-y-1">
+                            <div className="flex justify-between text-[11px] font-mono">
+                              <span className="text-zinc-450 font-bold">{b.label}</span>
+                              <span className="text-white font-bold">{b.count} operators</span>
+                            </div>
+                            <div className="w-full bg-zinc-900 h-2.5 rounded-full overflow-hidden border border-zinc-800">
+                              <div className={`h-full ${b.color} transition-all duration-500`} style={{ width: `${pctWidth}%` }}></div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+
+            {/* Granular Revenue Stream Intelligence */}
+            <div className="bg-zinc-950/80 border border-zinc-850 p-6 rounded-2xl">
+              <h4 className="text-xs font-bold font-mono text-zinc-400 uppercase tracking-widest mb-4">REVENUE STREAMS & TRANSACTION STATISTICS</h4>
+              {(() => {
+                const membershipRev = users.reduce((acc, curr) => {
+                  if (curr.membershipStatus !== 'active') return acc;
+                  const tierPricing = { Free: 0, Silver: 19, Gold: 49, Platinum: 99 };
+                  return acc + (tierPricing[curr.membership] || 0);
+                }, 0);
+                const featuredProfileRev = users.filter(u => u.isFeatured).length * 80;
+                const featuredTeamRev = teams.filter(t => t.isFeatured).length * 150;
+                const tournamentRev = tournaments.reduce((acc, t) => acc + (t.registrants ? t.registrants.filter(r => r.status === 'approved').length * 250 : 0), 0);
+                const verifiedBadgeRev = users.filter(u => u.badges && u.badges.length > 0).reduce((acc, u) => acc + (u.badges.length * 60), 0);
+                const sponsorRev = sponsors.filter(s => s.status === 'approved').length * 500;
+                const grandTotalRev = membershipRev + featuredProfileRev + featuredTeamRev + tournamentRev + verifiedBadgeRev + sponsorRev;
+                const dailyYield = Math.round(grandTotalRev * 0.08);
+
+                return (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                      <div className="bg-zinc-900 border border-zinc-800/60 p-3.5 rounded-xl font-mono">
+                        <p className="text-[9px] text-zinc-500 uppercase tracking-wide">Memberships</p>
+                        <p className="text-lg font-black text-rose-400 mt-1">₹{membershipRev}</p>
+                        <span className="text-[8px] text-zinc-650 block mt-0.5">Recurring passes</span>
+                      </div>
+                      <div className="bg-zinc-900 border border-zinc-800/60 p-3.5 rounded-xl font-mono">
+                        <p className="text-[9px] text-zinc-500 uppercase tracking-wide">Featured Users</p>
+                        <p className="text-lg font-black text-amber-400 mt-1">₹{featuredProfileRev}</p>
+                        <span className="text-[8px] text-zinc-650 block mt-0.5">₹80 per spotlight</span>
+                      </div>
+                      <div className="bg-zinc-900 border border-zinc-800/60 p-3.5 rounded-xl font-mono">
+                        <p className="text-[9px] text-zinc-500 uppercase tracking-wide">Featured Teams</p>
+                        <p className="text-lg font-black text-blue-400 mt-1">₹{featuredTeamRev}</p>
+                        <span className="text-[8px] text-zinc-650 block mt-0.5">₹150 per syndicate</span>
+                      </div>
+                      <div className="bg-zinc-900 border border-zinc-800/60 p-3.5 rounded-xl font-mono">
+                        <p className="text-[9px] text-zinc-500 uppercase tracking-wide">Tournament Fees</p>
+                        <p className="text-lg font-black text-cyan-400 mt-1">₹{tournamentRev}</p>
+                        <span className="text-[8px] text-zinc-650 block mt-0.5">₹250 per applicant</span>
+                      </div>
+                      <div className="bg-zinc-900 border border-zinc-800/60 p-3.5 rounded-xl font-mono">
+                        <p className="text-[9px] text-zinc-500 uppercase tracking-wide">Verified Badges</p>
+                        <p className="text-lg font-black text-emerald-400 mt-1">₹{verifiedBadgeRev}</p>
+                        <span className="text-[8px] text-zinc-650 block mt-0.5">₹60 per system tag</span>
+                      </div>
+                      <div className="bg-zinc-900 border border-zinc-800/60 p-3.5 rounded-xl font-mono">
+                        <p className="text-[9px] text-zinc-500 uppercase tracking-wide">Sponsor Deals</p>
+                        <p className="text-lg font-black text-purple-400 mt-1">₹{sponsorRev}</p>
+                        <span className="text-[8px] text-zinc-650 block mt-0.5">₹500 pitch fee</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-zinc-900 font-mono">
+                      <div className="flex justify-between items-center bg-zinc-900/40 p-4 border border-zinc-900 rounded-xl">
+                        <div>
+                          <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Estimated Daily Yield</p>
+                          <p className="text-2xl font-black text-rose-500 mt-0.5">₹{dailyYield}</p>
+                        </div>
+                        <span className="text-[10px] text-zinc-600 bg-zinc-950 px-2 py-1 rounded border border-zinc-850">8% Avg Daily</span>
+                      </div>
+                      <div className="flex justify-between items-center bg-zinc-900/40 p-4 border border-zinc-900 rounded-xl">
+                        <div>
+                          <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Gross Monthly Yield</p>
+                          <p className="text-2xl font-black text-cyan-400 mt-0.5">₹{grandTotalRev}</p>
+                        </div>
+                        <span className="text-[10px] text-zinc-600 bg-zinc-950 px-2 py-1 rounded border border-zinc-850">Monthly Gross</span>
+                      </div>
+                      <div className="flex justify-between items-center bg-emerald-500/10 p-4 border border-emerald-500/20 rounded-xl">
+                        <div>
+                          <p className="text-[10px] text-emerald-500/70 uppercase tracking-widest font-bold">Total Platform Gross</p>
+                          <p className="text-2xl font-black text-emerald-400 mt-0.5">₹{grandTotalRev}</p>
+                        </div>
+                        <span className="text-[10px] text-emerald-400 font-bold bg-emerald-950/40 px-2 py-1 rounded border border-emerald-500/20">LIVE TOTAL</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Quick action notifications warnings */}
@@ -567,7 +1637,7 @@ export default function AdminPanel({
                     <tr key={u.id} className="hover:bg-zinc-950/30">
                       <td className="p-3 pl-4">
                         <div className="flex items-center gap-2.5">
-                          <img src={u.profilePhoto} referrerPolicy="no-referrer" className="w-8 h-8 rounded-lg object-cover" />
+                          <img src={u.profilePhoto || "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150&auto=format&fit=crop&q=80"} referrerPolicy="no-referrer" className="w-8 h-8 rounded-lg object-cover" />
                           <div>
                             <p className="font-bold text-white flex items-center gap-1">
                               {u.gamerName}
@@ -640,6 +1710,290 @@ export default function AdminPanel({
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'profiles' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center w-full border-b border-zinc-800/40 pb-2.5">
+              <div>
+                <h3 className="text-base font-extrabold text-white uppercase tracking-wide">Esports Gamer Career Dossier Inventory</h3>
+                <p className="text-[10px] text-zinc-500 font-mono mt-0.5">Edit athlete credentials, calibrate skill analytics, and assign user vanity items</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {users.map(u => (
+                <div key={u.id} className="p-4 bg-zinc-950/80 border border-zinc-850 rounded-2xl relative overflow-hidden flex flex-col justify-between">
+                  {/* Subtle decorative background banner */}
+                  <div className={`h-1.5 absolute top-0 left-0 right-0 ${u.membership === 'Platinum' ? 'bg-rose-500' : u.membership === 'Gold' ? 'bg-yellow-500' : u.membership === 'Silver' ? 'bg-purple-500' : 'bg-zinc-800'}`}></div>
+
+                  <div className="flex gap-3 items-start my-1 bg-zinc-90 w-full">
+                    <img src={u.profilePhoto || "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150&auto=format&fit=crop&q=80"} className="w-12 h-12 rounded-xl object-cover border border-zinc-800" referrerPolicy="no-referrer" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-white truncate text-sm">{u.gamerName}</span>
+                        <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-zinc-900 border border-zinc-800 text-zinc-400">
+                          {u.membership.toUpperCase()}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-zinc-500 truncate">@{u.username} • {u.email}</p>
+                      <p className="text-[11px] text-rose-450 font-mono tracking-wider mt-1">{u.favoriteGames.join(" / ")}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 bg-zinc-900/60 p-2.5 rounded-xl border border-zinc-850 my-3 text-center">
+                    <div>
+                      <p className="text-[8px] font-mono text-zinc-500 uppercase font-black">Skill Rate</p>
+                      <p className="text-xs font-bold text-white mt-0.5">{u.skillRating} MMR</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-mono text-zinc-500 uppercase font-black">K/D Ratio</p>
+                      <p className="text-xs font-bold text-cyan-400 mt-0.5">{u.kdRatio} K/D</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-mono text-zinc-500 uppercase font-black">Home Base</p>
+                      <p className="text-xs font-bold text-zinc-400 mt-0.5 truncate">{u.city}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-zinc-900 text-[10px] text-zinc-500">
+                    <span className="font-bold text-zinc-450">Active Cosmic Gear:</span>
+                    <span className="bg-zinc-900 px-1 py-0.5 rounded text-[9px] font-mono border border-zinc-850">Sticker: {u.activeSticker || "None"}</span>
+                    <span className="bg-zinc-900 px-1 py-0.5 rounded text-[9px] font-mono border border-zinc-850">Frame: {u.activeFrame ? "Enabled" : "None"}</span>
+                  </div>
+
+                  <div className="flex gap-2 mt-4">
+                    <button
+                      onClick={() => {
+                        setEditingUserProfileId(u.id);
+                        setEditGamerName(u.gamerName);
+                        setEditBio(u.bio || '');
+                        setEditSkillRating(u.skillRating || 1500);
+                        setEditKdRatio(u.kdRatio || 1.0);
+                        setEditCity(u.city || '');
+                        setEditCountry(u.country || '');
+                        setEditMembership(u.membership || 'Free');
+                      }}
+                      className="w-full bg-zinc-900 hover:bg-zinc-850 text-white font-mono text-xs py-2 rounded-xl border border-zinc-800 transition-all font-bold cursor-pointer"
+                    >
+                      🖋️ EDIT DOSSIER & STATS
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Editing Slide-over Modal Backdrop */}
+            <AnimatePresence>
+              {editingUserProfileId && (
+                <div className="fixed inset-0 z-50 flex items-center justify-end">
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute inset-0 bg-black/85 backdrop-blur-sm"
+                    onClick={() => setEditingUserProfileId(null)}
+                  />
+
+                  <motion.div
+                    initial={{ x: "100%", opacity: 0 }}
+                    animate={{ x: 0, opacity: 1 }}
+                    exit={{ x: "100%", opacity: 0 }}
+                    className="relative bg-zinc-950 border-l border-zinc-850 w-full max-w-lg h-full p-6 overflow-y-auto space-y-4"
+                  >
+                    <div className="flex justify-between items-center pb-3 border-b border-zinc-805">
+                      <div>
+                        <h3 className="text-sm font-bold font-mono tracking-widest text-red-500 uppercase">CALIBRATE PILOT DOSSIER</h3>
+                        <p className="text-[10px] text-zinc-550 font-mono">Modifying stats overrides direct in system files</p>
+                      </div>
+                      <button
+                        onClick={() => setEditingUserProfileId(null)}
+                        className="text-zinc-500 hover:text-white font-mono text-xs px-2 py-1 rounded bg-zinc-900 border border-zinc-800 uppercase"
+                      >
+                        CLOSE ✕
+                      </button>
+                    </div>
+
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (!editingUserProfileId) return;
+                        onAdminUpdateUserProfile(editingUserProfileId, {
+                          gamerName: editGamerName,
+                          bio: editBio,
+                          skillRating: Number(editSkillRating),
+                          kdRatio: Number(editKdRatio),
+                          city: editCity,
+                          country: editCountry,
+                          membership: editMembership
+                        });
+                        setEditingUserProfileId(null);
+                      }}
+                      className="space-y-4 text-xs font-mono"
+                    >
+                      <div>
+                        <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-black">Gamer tag / Name</label>
+                        <input
+                          type="text"
+                          className="w-full bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl font-sans"
+                          value={editGamerName}
+                          onChange={e => setEditGamerName(e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-black">Personal player biography</label>
+                        <textarea
+                          rows={3}
+                          className="w-full bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl font-sans"
+                          value={editBio}
+                          onChange={e => setEditBio(e.target.value)}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-black">Skill Rate MMR</label>
+                          <input
+                            type="number"
+                            className="w-full bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl"
+                            value={editSkillRating}
+                            onChange={e => setEditSkillRating(Number(e.target.value))}
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-black">K/D ratio rating</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            className="w-full bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl"
+                            value={editKdRatio}
+                            onChange={e => setEditKdRatio(Number(e.target.value))}
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-black">Home Base City</label>
+                          <input
+                            type="text"
+                            className="w-full bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl font-sans"
+                            value={editCity}
+                            onChange={e => setEditCity(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-black">Country Location</label>
+                          <input
+                            type="text"
+                            className="w-full bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl font-sans"
+                            value={editCountry}
+                            onChange={e => setEditCountry(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-black">Billing subscription tier status</label>
+                        <select
+                          className="w-full bg-zinc-900 border border-zinc-800 text-zinc-300 p-2.5 rounded-xl"
+                          value={editMembership}
+                          onChange={e => setEditMembership(e.target.value as any)}
+                        >
+                          <option value="Free">Free Pass Tier</option>
+                          <option value="Silver">Silver Premium Pass</option>
+                          <option value="Gold">Gold Elite Pass</option>
+                          <option value="Platinum">Platinum VIP Pass</option>
+                        </select>
+                      </div>
+
+                      <div className="pt-2">
+                        <button
+                          type="submit"
+                          className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-3 rounded-xl uppercase tracking-wider transition-all cursor-pointer"
+                        >
+                          COMMIT SPEC CHANGES
+                        </button>
+                      </div>
+                    </form>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+
+        {activeTab === 'teams' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center w-full border-b border-zinc-800/40 pb-2.5">
+              <div>
+                <h3 className="text-base font-extrabold text-white uppercase tracking-wide">Squad Finder & Coalition Registries</h3>
+                <p className="text-[10px] text-zinc-500 font-mono mt-0.5">Audit guild clans, verify line-ups, and disband unauthorized teams</p>
+              </div>
+            </div>
+
+            {teams.length === 0 ? (
+              <div className="p-10 text-center bg-zinc-950/40 border border-zinc-850 rounded-xl">
+                <p className="text-xs text-zinc-500 font-mono italic">No esports rosters or teams active in database registers.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {teams.map((t) => (
+                  <div key={t.id} className="p-4 bg-zinc-950/80 border border-zinc-850 rounded-2xl relative overflow-hidden flex flex-col justify-between">
+                    <div className="flex gap-3 items-start bg-zinc-90 w-full">
+                      <img src={t.logo || "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150"} className="w-12 h-12 rounded-xl object-cover border border-zinc-805" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-white text-sm truncate">{t.name}</span>
+                          <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-zinc-900 border border-zinc-800 text-cyan-400">
+                            {t.game.toUpperCase()}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-zinc-550 leading-relaxed font-sans line-clamp-2 mt-1">"{t.bio}"</p>
+                        <p className="text-[9px] text-zinc-500 font-mono mt-2">Owner Admin UID: <strong className="text-zinc-400">{t.creatorGamerName}</strong></p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono mt-4 pt-4 border-t border-zinc-900 bg-zinc-90 w-full flex-wrap gap-2">
+                      <span>Total Squad Members: <strong className="text-white">{t.members.length}/5</strong></span>
+                      
+                      <div className="flex gap-2 items-center">
+                        <button
+                          onClick={() => onToggleFeaturedTeam(t.id)}
+                          className={`px-2 py-1 rounded text-[9px] font-mono leading-none tracking-wider font-bold uppercase transition-all border ${
+                            t.isFeatured 
+                              ? 'bg-amber-400/20 border-amber-400 text-amber-300 shadow shadow-amber-400/5' 
+                              : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-white'
+                          }`}
+                        >
+                          ⭐ {t.isFeatured ? 'Featured' : 'Regular'}
+                        </button>
+
+                        {deleteTeamConfirmId === t.id ? (
+                          <div className="flex gap-1 bg-red-650 bg-red-600/10 border border-red-500 px-2 py-0.5 rounded items-center">
+                            <span className="text-[8px] text-red-400 font-mono uppercase font-black font-bold">DISBAND?</span>
+                            <button onClick={() => { onAdminDeleteTeam(t.id); setDeleteTeamConfirmId(null); }} className="text-red-400 hover:text-white font-mono font-bold hover:underline py-0.5">YES</button>
+                            <button onClick={() => setDeleteTeamConfirmId(null)} className="text-zinc-400 hover:text-white font-mono py-0.5">NO</button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setDeleteTeamConfirmId(t.id)}
+                            className="bg-zinc-950 border border-rose-500/20 text-rose-500 hover:bg-rose-500 /10 hover:bg-rose-500 hover:text-white rounded px-2.5 py-1 text-[9px] font-mono leading-none tracking-wider font-bold uppercase transition-all cursor-pointer"
+                          >
+                            Dissolve Team
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -724,6 +2078,83 @@ export default function AdminPanel({
                 />
               </div>
 
+              <div>
+                <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Banner image URL</label>
+                <input
+                  type="url"
+                  placeholder="e.g. https://images.unsplash.com/... or paste URL"
+                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                  value={newTourneyBannerUrl}
+                  onChange={(e) => setNewTourneyBannerUrl(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Entry Fee</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Free or ₹100"
+                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                  value={newTourneyEntryFee}
+                  onChange={(e) => setNewTourneyEntryFee(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Max individual players limit</label>
+                <input
+                  type="number"
+                  placeholder="e.g. 100"
+                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                  value={newTourneyMaxPlayers}
+                  onChange={(e) => setNewTourneyMaxPlayers(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Registration Deadline</label>
+                <input
+                  type="datetime-local"
+                  required
+                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                  value={newTourneyRegDeadline}
+                  onChange={(e) => setNewTourneyRegDeadline(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Tournament Start Date</label>
+                <input
+                  type="datetime-local"
+                  required
+                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                  value={newTourneyStart}
+                  onChange={(e) => setNewTourneyStart(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Tournament End Date</label>
+                <input
+                  type="datetime-local"
+                  required
+                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                  value={newTourneyEnd}
+                  onChange={(e) => setNewTourneyEnd(e.target.value)}
+                />
+              </div>
+
+              <div className="md:col-span-3">
+                <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Tournament Full Description</label>
+                <textarea
+                  rows={3}
+                  placeholder="e.g. Join the ultimate Battle Royale masters challenge and fight for the massive prize pool cash bounty!"
+                  className="w-full bg-zinc-950 border border-zinc-800 text-xs p-3 text-white focus:outline-none focus:border-red-500 rounded"
+                  value={newTourneyDescription}
+                  onChange={(e) => setNewTourneyDescription(e.target.value)}
+                />
+              </div>
+
               <div className="md:col-span-3">
                 <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Custom rule points (Split by newline)</label>
                 <textarea
@@ -744,45 +2175,687 @@ export default function AdminPanel({
             </form>
 
             {/* Active tournament applications to approve */}
-            <div className="space-y-4 pt-4 border-t border-zinc-800/40">
-              <h4 className="text-xs font-black font-mono tracking-widest text-zinc-400">ENROLLMENT REGISTRATION APPROVALS DECK</h4>
+            <div className="space-y-4 pt-6 border-t border-zinc-800/40">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                <div>
+                  <h4 className="text-sm font-black font-mono tracking-wider text-red-500 uppercase">Arena Registration approvals dashboard</h4>
+                  <p className="text-[11px] text-zinc-500 font-mono">Verify screenshots, confirm transaction IDs, and authorize brackets.</p>
+                </div>
+                {/* Statistics badges */}
+                <div className="flex gap-2">
+                  <span className="text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded">
+                    PENDING: {registrations.filter(r => r.status === 'pending').length}
+                  </span>
+                  <span className="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded">
+                    APPROVED: {registrations.filter(r => r.status === 'approved').length}
+                  </span>
+                </div>
+              </div>
 
-              {tournaments.flatMap(t => t.registrants.map(r => ({ ...r, tourneyId: t.id, tourneyTitle: t.title }))).length === 0 ? (
-                <p className="text-zinc-500 font-mono text-xs pl-2 italic">No roster registrations active in databases.</p>
-              ) : (
-                <div className="space-y-2">
-                  {tournaments.map(t => (
-                    <div key={t.id} className="space-y-2">
-                      {t.registrants.some(r => r.status === 'pending') && (
-                        <div className="p-3 bg-zinc-950/60 border border-zinc-850 rounded-xl space-y-2">
-                          <p className="font-bold text-white text-xs">{t.title} Signups</p>
-                          {t.registrants.filter(r => r.status === 'pending').map((r, idx) => (
-                            <div key={r.id + idx} className="flex justify-between items-center text-xs p-2 bg-zinc-900 border border-zinc-800 rounded">
-                              <div>
-                                <p className="font-mono text-zinc-300">Name: <strong className="text-white font-sans">{r.name}</strong> ({r.type.toUpperCase()})</p>
-                                <p className="text-[10px] text-zinc-500">Contact: {r.contactEmail} • Registered: {r.registeredAt}</p>
+              {/* Filters & search bars */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-zinc-950/40 p-3 rounded-lg border border-zinc-850">
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-2.5 pointer-events-none">
+                    <Search className="h-3.5 w-3.5 text-zinc-500" />
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Search query by name, team, id..."
+                    className="w-full bg-zinc-950 border border-zinc-800 pl-8 pr-3 py-1.5 rounded text-xs text-white placeholder-zinc-550 focus:outline-none focus:border-red-500"
+                    value={regSearch}
+                    onChange={(e) => setRegSearch(e.target.value)}
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 px-2 py-1 rounded">
+                  <Filter className="h-3.5 w-3.5 text-zinc-500 ml-1" />
+                  <select
+                    className="bg-transparent text-xs text-zinc-300 w-full focus:outline-none"
+                    value={regStatusFilter}
+                    onChange={(e) => setRegStatusFilter(e.target.value)}
+                  >
+                    <option value="all">Statuses: All</option>
+                    <option value="pending">Status: Pending</option>
+                    <option value="approved">Status: Approved</option>
+                    <option value="rejected">Status: Rejected</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 px-2 py-1 rounded">
+                  <Trophy className="h-3.5 w-3.5 text-zinc-500 ml-1" />
+                  <select
+                    className="bg-transparent text-xs text-zinc-300 w-full focus:outline-none"
+                    value={regTourneyFilter}
+                    onChange={(e) => setRegTourneyFilter(e.target.value)}
+                  >
+                    <option value="all">Tournaments: All</option>
+                    {tournaments.map(t => (
+                      <option key={t.id} value={t.id}>{t.title}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {(() => {
+                const getGamerNameForUser = (userId: string) => {
+                  const u = users.find(user => user.id === userId);
+                  return u ? u.gamerName : 'Unknown Gamer';
+                };
+                const getTeamName = (teamId: string) => {
+                  const t = teams.find(team => team.id === teamId);
+                  return t ? t.name : 'Unknown Squadron';
+                };
+                const getTournamentTitle = (tourneyId: string) => {
+                  const t = tournaments.find(tour => tour.id === tourneyId);
+                  return t ? t.title : 'Unknown Tournament';
+                };
+
+                const filteredRegs = registrations.filter(reg => {
+                  const query = regSearch.trim().toLowerCase();
+                  const gamerName = getGamerNameForUser(reg.user_id).toLowerCase();
+                  const teamName = reg.team_id ? getTeamName(reg.team_id).toLowerCase() : '';
+                  const tourneyTitle = getTournamentTitle(reg.tournament_id).toLowerCase();
+                  const txnId = reg.transaction_id ? reg.transaction_id.toLowerCase() : '';
+                  
+                  const matchesSearch = !query || gamerName.includes(query) || teamName.includes(query) || tourneyTitle.includes(query) || txnId.includes(query);
+                  const matchesStatus = regStatusFilter === 'all' || reg.status === regStatusFilter;
+                  const matchesTourney = regTourneyFilter === 'all' || reg.tournament_id === regTourneyFilter;
+
+                  return matchesSearch && matchesStatus && matchesTourney;
+                });
+
+                if (filteredRegs.length === 0) {
+                  return (
+                    <div className="p-8 text-center bg-zinc-950/40 border border-zinc-850 rounded-xl">
+                      <p className="text-zinc-550 font-mono text-xs italic">No matching registrations found in dashboard queries.</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-3.5">
+                    {filteredRegs.map((reg) => {
+                      const tourney = tournaments.find(t => t.id === reg.tournament_id);
+                      const statusColors: Record<string, string> = {
+                        pending: 'text-amber-400 bg-amber-400/5 border-amber-400/20',
+                        approved: 'text-emerald-400 bg-emerald-400/5 border-emerald-400/20',
+                        rejected: 'text-rose-455 bg-rose-500/5 border-rose-505/15'
+                      };
+
+                      const labelGamer = getGamerNameForUser(reg.user_id);
+                      const labelTeam = reg.team_id ? getTeamName(reg.team_id) : null;
+
+                      return (
+                        <div key={reg.id} className="p-4 bg-zinc-950/60 border border-zinc-850 hover:border-zinc-800 rounded-xl space-y-4 shadow transition-all duration-300">
+                          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 border-b border-zinc-900 pb-3">
+                            <div>
+                              <span className="text-[10px] text-zinc-550 font-mono">TOURNAMENT:</span>
+                              <h4 className="font-extrabold text-white text-xs tracking-tight">{tourney?.title || 'Unknown event'}</h4>
+                              <div className="flex gap-3 text-[10px] text-zinc-500 font-mono mt-0.5">
+                                <span>ENTRY: <span className="text-zinc-300 font-bold">{tourney?.entry_fee}</span></span>
+                                <span>TYPE: <span className="text-cyan-400 uppercase">{reg.registration_type}</span></span>
                               </div>
+                            </div>
+                            
+                            <div className="flex items-center gap-2">
+                               <span className={`text-[9.5px] uppercase font-mono px-2.5 py-0.5 rounded border ${statusColors[reg.status] || 'text-zinc-500'}`}>
+                                  REG: {reg.status}
+                               </span>
+                               {tourney?.entry_fee && tourney.entry_fee.toLowerCase() !== 'free' && tourney.entry_fee !== '0' && (
+                                 <span className={`text-[9.5px] uppercase font-mono px-2.5 py-0.5 rounded border ${
+                                   reg.payment_status === 'paid' ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5' : 'text-amber-400 border-amber-500/20 bg-amber-500/5'
+                                 }`}>
+                                   PAY: {reg.payment_status}
+                                 </span>
+                               )}
+                            </div>
+                          </div>
 
-                              <div className="flex gap-1.5 font-mono">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                              <p className="text-[10px] text-zinc-550 uppercase font-mono">GAMER ACCREDITATION / SQUAD</p>
+                              <p className="text-xs text-white font-bold">
+                                {reg.registration_type === 'solo' ? labelGamer : `${labelTeam} [Squad]`}
+                              </p>
+                              <p className="text-[10px] text-zinc-500 font-mono">
+                                By: {labelGamer} • Reg Date: {new Date(reg.registered_at).toLocaleString()}
+                              </p>
+                            </div>
+
+                            <div className="space-y-1.5 md:text-right">
+                              {reg.transaction_id && (
+                                <div>
+                                  <p className="text-[10px] text-zinc-550 uppercase font-mono">TXN REFERENCE ID</p>
+                                  <p className="text-xs text-white font-mono font-bold tracking-wider">{reg.transaction_id}</p>
+                                </div>
+                              )}
+
+                              {reg.payment_screenshot_url && (
                                 <button
-                                  onClick={() => onApproveTournamentRegistration(t.id, r.id)}
-                                  className="bg-zinc-950 border border-green-500/35 px-2 py-1 hover:bg-green-500 hover:text-zinc-950 text-green-400 rounded text-[9px] font-bold"
+                                  type="button"
+                                  onClick={() => setViewScreenshotUrl(reg.payment_screenshot_url)}
+                                  className="inline-flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300 font-mono text-[10px] bg-cyan-950/30 px-2 py-1 rounded border border-cyan-900/30 transition-all cursor-pointer"
                                 >
-                                  APPROVE
+                                  <Eye className="w-3.5 h-3.5" />
+                                  VIEW PAYMENT SCREENSHOT
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Control buttons */}
+                          <div className="flex border-t border-zinc-900 pt-3 gap-2.5 justify-end">
+                            {reg.status === 'pending' && (
+                              <>
+                                <button
+                                  onClick={async () => {
+                                    if (onUpdateTournamentRegistrationStatus) {
+                                      await onUpdateTournamentRegistrationStatus(
+                                        reg.id,
+                                        'approved',
+                                        reg.payment_status === 'pending' && reg.transaction_id ? 'paid' : reg.payment_status
+                                      );
+                                    } else {
+                                      onApproveTournamentRegistration(reg.tournament_id, reg.user_id);
+                                    }
+                                  }}
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-[10px] px-3.5 py-1.5 rounded-lg uppercase font-bold"
+                                >
+                                  APPROVE SLOT
                                 </button>
                                 <button
-                                  onClick={() => onRejectTournamentRegistration(t.id, r.id)}
-                                  className="bg-zinc-950 border border-red-500/35 px-2 py-1 hover:bg-red-500 hover:text-white text-red-500 rounded text-[9px] font-bold"
+                                  onClick={async () => {
+                                    if (onUpdateTournamentRegistrationStatus) {
+                                      await onUpdateTournamentRegistrationStatus(reg.id, 'rejected');
+                                    } else {
+                                      onRejectTournamentRegistration(reg.tournament_id, reg.user_id);
+                                    }
+                                  }}
+                                  className="bg-zinc-900 hover:bg-rose-950 border border-zinc-805 text-rose-500 hover:text-rose-400 font-mono text-[10px] px-3.5 py-1.5 rounded-lg uppercase font-bold"
                                 >
                                   REJECT
                                 </button>
-                              </div>
-                            </div>
-                          ))}
+                              </>
+                            )}
+
+                            {reg.status !== 'pending' && (
+                               <span className="text-[10px] text-zinc-500 font-mono italic">
+                                 Verification settled and logged.
+                               </span>
+                            )}
+                          </div>
                         </div>
-                      )}
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* PAYMENT SCREENSHOT LIGHTBOX MODAL */}
+            <AnimatePresence>
+              {viewScreenshotUrl && (
+                <div 
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+                  onClick={() => setViewScreenshotUrl(null)}
+                >
+                  <motion.div 
+                    initial={{ scale: 0.95, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.95, opacity: 0 }}
+                    className="relative max-w-2xl bg-zinc-950 p-3 rounded-2xl border border-zinc-800 flex flex-col items-center gap-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button 
+                      onClick={() => setViewScreenshotUrl(null)}
+                      className="absolute -top-3 -right-3 bg-red-650 text-white p-1.5 rounded-full hover:bg-red-700 shadow-lg"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                    <p className="text-[10.5px] font-mono font-bold uppercase tracking-wider text-zinc-400 border-b border-zinc-900 pb-1 w-full text-center">
+                      UTR Screenshot Transfer Proof
+                    </p>
+                    <img 
+                      src={viewScreenshotUrl} 
+                      alt="Transfer Proof Lightbox" 
+                      className="max-h-[75vh] max-w-full rounded-lg object-contain border border-zinc-900 shadow-2xl" 
+                    />
+                    <button 
+                      onClick={() => setViewScreenshotUrl(null)}
+                      className="text-zinc-500 text-[10px] shrink-0 font-mono hover:text-white"
+                    >
+                      [ CLICK OUTSIDE TO CLOSE ]
+                    </button>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            {/* Tournament Editing Drawer/Section */}
+            <AnimatePresence>
+              {editingTourney && (
+                <motion.div 
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="bg-zinc-900/90 border border-red-500/30 p-5 rounded-xl space-y-4 shadow-xl"
+                >
+                  <div className="flex justify-between items-center border-b border-zinc-800 pb-2">
+                    <h4 className="text-xs font-mono font-bold tracking-wider text-red-500 uppercase flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-red-500" />
+                      Configure Tournament: {editingTourney.title}
+                    </h4>
+                    <button 
+                      type="button"
+                      onClick={() => setEditingTourney(null)}
+                      className="text-zinc-500 hover:text-white font-mono text-xs cursor-pointer"
+                    >
+                      [CANCEL]
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleEditTourneySubmit} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Title</label>
+                      <input
+                        type="text"
+                        required
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none focus:border-red-500 rounded"
+                        value={editTourneyTitle}
+                        onChange={(e) => setEditTourneyTitle(e.target.value)}
+                      />
                     </div>
-                  ))}
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Game Select</label>
+                      <select
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-zinc-350 focus:outline-none focus:border-red-500 rounded"
+                        value={editTourneyGame}
+                        onChange={(e) => setEditTourneyGame(e.target.value)}
+                      >
+                        <option value="Valorant">Valorant</option>
+                        <option value="BGMI">BGMI</option>
+                        <option value="Free Fire">Free Fire</option>
+                        <option value="CS2">CS2</option>
+                        <option value="COD Mobile">COD Mobile</option>
+                        <option value="PUBG Mobile">PUBG Mobile</option>
+                        <option value="GTA V">GTA V</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Prize pool format</label>
+                      <input
+                        type="text"
+                        required
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                        value={editTourneyPrize}
+                        onChange={(e) => setEditTourneyPrize(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Status</label>
+                      <select
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-zinc-350 focus:outline-none rounded font-mono"
+                        value={editTourneyStatus}
+                        onChange={(e) => setEditTourneyStatus(e.target.value as any)}
+                      >
+                        <option value="upcoming">Upcoming</option>
+                        <option value="ongoing">Ongoing / Live</option>
+                        <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Max slots limit</label>
+                      <input
+                        type="number"
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                        value={editTourneyMaxTeams}
+                        onChange={(e) => setEditTourneyMaxTeams(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Max individual players limit</label>
+                      <input
+                        type="number"
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                        value={editTourneyMaxPlayers}
+                        onChange={(e) => setEditTourneyMaxPlayers(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Registration restrictions</label>
+                      <select
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-zinc-300 focus:outline-none rounded"
+                        value={editTourneyRegType}
+                        onChange={(e) => setEditTourneyRegType(e.target.value as any)}
+                      >
+                        <option value="solo">Solo Registered (Individually)</option>
+                        <option value="team">Team Registered (Full squad)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Registration Deadline</label>
+                      <input
+                        type="datetime-local"
+                        required
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                        value={editTourneyRegDeadline}
+                        onChange={(e) => setEditTourneyRegDeadline(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Event Start Time</label>
+                      <input
+                        type="datetime-local"
+                        required
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                        value={editTourneyStart}
+                        onChange={(e) => setEditTourneyStart(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Event End Time</label>
+                      <input
+                        type="datetime-local"
+                        required
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                        value={editTourneyEnd}
+                        onChange={(e) => setEditTourneyEnd(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Banner Image URL</label>
+                      <input
+                        type="url"
+                        placeholder="Paste image web reference"
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                        value={editTourneyBannerUrl}
+                        onChange={(e) => setEditTourneyBannerUrl(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Entry Fee</label>
+                      <input
+                        type="text"
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                        value={editTourneyEntryFee}
+                        onChange={(e) => setEditTourneyEntryFee(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Event Timetable lines (split by commas)</label>
+                      <input
+                        type="text"
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                        value={editTourneySchedule}
+                        onChange={(e) => setEditTourneySchedule(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <label className="block text-[10px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Full Description</label>
+                      <textarea
+                        rows={3}
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs p-3 text-white focus:outline-none focus:border-red-500 rounded"
+                        value={editTourneyDescription}
+                        onChange={(e) => setEditTourneyDescription(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <label className="block text-[10px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Custom Rules (Split by Newline)</label>
+                      <textarea
+                        rows={3}
+                        className="w-full bg-zinc-950 border border-zinc-800 text-xs p-3 text-white focus:outline-none focus:border-red-500 rounded"
+                        value={editTourneyRules}
+                        onChange={(e) => setEditTourneyRules(e.target.value)}
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="md:col-span-3 bg-red-600 hover:bg-red-700 text-white font-mono text-xs font-bold py-2.5 rounded-xl uppercase tracking-wider"
+                    >
+                      COMMIT BRACKET SAVES
+                    </button>
+                  </form>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Active tournaments overview & delete layout */}
+            <div className="space-y-4 pt-4 border-t border-zinc-800/40">
+              <h4 className="text-xs font-black font-mono tracking-widest text-zinc-400">ACTIVE TOURNAMENT BRACKETS ARCHIVE</h4>
+              
+              {tournaments.length === 0 ? (
+                <p className="text-zinc-500 font-mono text-xs pl-2 italic">No active tourneys configured.</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-4">
+                  {tournaments.map(t => {
+                    const approvedRegsForTourney = (registrations || []).filter(
+                      r => r.tournament_id === t.id && r.status === 'approved'
+                    );
+                    const tourneyMatches = matchesMap[t.id] || [];
+                    const matchesExist = tourneyMatches.length > 0;
+                    const isBracketSelected = selectedBracketTourneyId === t.id;
+
+                    const getParticipantName = (id: string | null | undefined, type: 'solo' | 'team') => {
+                      if (!id) return "BYE";
+                      if (type === 'solo') {
+                        const user = users.find(u => u.id === id);
+                        return user ? (user.gamerName || user.username || user.email || 'Gamer') : 'BYE';
+                      } else {
+                        const team = teams.find(ti => ti.id === id);
+                        return team ? team.name : 'BYE';
+                      }
+                    };
+
+                    return (
+                      <div key={t.id} className="p-4 bg-zinc-950 border border-zinc-850 rounded-2xl space-y-4">
+                        <div className="flex justify-between items-center flex-wrap gap-2">
+                          <div>
+                            <p className="font-bold text-white text-sm">{t.title}</p>
+                            <span className="text-[10px] text-zinc-500 font-mono bg-zinc-900 border border-zinc-805 px-1.5 py-0.5 rounded inline-block mt-1 uppercase text-[8px] tracking-wider font-bold">
+                              {t.game} • {t.prizePool || t.prize_pool} pool • Max: {t.max_teams} • Status: {t.status}
+                            </span>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleSelectBracketTourney(t.id)}
+                              className={`rounded px-3 py-1.5 text-[9px] font-mono leading-none font-bold uppercase transition-all cursor-pointer ${
+                                isBracketSelected
+                                  ? 'bg-rose-500/20 text-rose-400 border border-rose-500/35'
+                                  : 'bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700'
+                              }`}
+                            >
+                              {isBracketSelected ? 'Hide Bracket' : 'Bracket / Matches'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditTourney(t)}
+                              className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-850 text-zinc-300 rounded px-3 py-1.5 text-[9px] font-mono leading-none font-bold uppercase transition-all cursor-pointer"
+                            >
+                              Modify / Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onAdminDeleteTournament(t.id)}
+                              className="bg-zinc-950 border border-rose-500/20 text-rose-500 hover:bg-rose-500 hover:text-white rounded px-2.5 py-1.5 text-[9px] font-mono leading-none font-bold uppercase transition-all cursor-pointer"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Collapsible Bracket Management Area */}
+                        {isBracketSelected && (
+                          <div className="bg-zinc-900/40 border border-zinc-850 rounded-xl p-4 space-y-4">
+                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-3 bg-zinc-950/60 rounded-lg border border-zinc-850/40 gap-3">
+                              <div className="space-y-1">
+                                <span className="text-[10px] font-mono text-zinc-400 font-bold block">PARTICIPANTS PREPARATION</span>
+                                <p className="text-[11px] text-zinc-400">
+                                  Approved registrations for this tournament: <strong className="text-emerald-400">{approvedRegsForTourney.length}</strong>
+                                </p>
+                              </div>
+
+                              {!matchesExist ? (
+                                <div className="flex items-center gap-2">
+                                  <select
+                                    value={bracketSlotLimit}
+                                    onChange={(e) => setBracketSlotLimit(Number(e.target.value))}
+                                    className="bg-zinc-950 border border-zinc-800 text-[10px] font-mono px-3 py-1.5 text-zinc-300 focus:outline-none rounded"
+                                  >
+                                    <option value={4}>4 Slots (Semi-Finals)</option>
+                                    <option value={8}>8 Slots (Quarter-Finals)</option>
+                                    <option value={16}>16 Slots (Round of 16)</option>
+                                    <option value={32}>32 Slots (Round of 32)</option>
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleGenerateBracket(t.id, bracketSlotLimit, t.registrationType || 'solo')}
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-zinc-950 font-mono font-bold text-[10px] hover:text-white px-3.5 py-1.5 rounded transition-all"
+                                  >
+                                    Generate Seeding Bracket
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[9px] font-mono text-emerald-400 font-bold bg-emerald-500/15 border border-emerald-500/20 px-2 py-1 rounded">
+                                    BRACKET ACTIVE
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResetBracket(t.id)}
+                                    className="bg-rose-950 hover:bg-rose-900 text-rose-400 border border-rose-500/30 font-mono font-bold text-[10px] px-3 py-1.5 rounded transition-all"
+                                  >
+                                    Reset Bracket
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Match List Viewer */}
+                            {matchesExist ? (
+                              <div className="space-y-4">
+                                {Array.from({ length: Math.max(...tourneyMatches.map(m => m.roundNumber), 0) }, (_, rIdx) => {
+                                  const roundNum = rIdx + 1;
+                                  const roundMatches = tourneyMatches.filter(m => m.roundNumber === roundNum);
+                                  const totalRounds = Math.max(...tourneyMatches.map(m => m.roundNumber), 0);
+
+                                  const getRoundLabel = (rn: number, tr: number) => {
+                                    if (rn === tr) return "Grand Final";
+                                    if (rn === tr - 1) return "Semi Finals";
+                                    if (rn === tr - 2) return "Quarter Finals";
+                                    return `Round of ${Math.pow(2, tr - rn + 1)}`;
+                                  };
+
+                                  return (
+                                    <div key={roundNum} className="space-y-2">
+                                      <h5 className="text-[10px] font-mono font-bold text-rose-500 tracking-wider border-b border-zinc-800 pb-1">
+                                        {getRoundLabel(roundNum, totalRounds)}
+                                      </h5>
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                                        {roundMatches.map(match => {
+                                          const p1Id = t.registrationType === 'solo' ? match.player1UserId : match.team1Id;
+                                          const p2Id = t.registrationType === 'solo' ? match.player2UserId : match.team2Id;
+
+                                          const p1Name = getParticipantName(p1Id, t.registrationType || 'solo');
+                                          const p2Name = getParticipantName(p2Id, t.registrationType || 'solo');
+
+                                          const winnerId = t.registrationType === 'solo' ? match.winnerUserId : match.winnerTeamId;
+
+                                          return (
+                                            <div key={match.id} className="p-3 bg-zinc-950 border border-zinc-850 rounded-xl space-y-3">
+                                              <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500">
+                                                <span>Match #{match.matchNumber}</span>
+                                                <span className={`px-1.5 py-0.5 rounded border text-[8px] font-bold ${
+                                                  match.status === 'live' 
+                                                    ? 'bg-rose-500/10 border-rose-500/20 text-rose-400 animate-pulse'
+                                                    : match.status === 'completed' 
+                                                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                                                      : 'bg-zinc-900 border-zinc-805 text-zinc-400'
+                                                }`}>
+                                                  {match.status.toUpperCase()}
+                                                </span>
+                                              </div>
+                                              <div className="flex justify-between items-center gap-2">
+                                                <div className={`flex-1 text-center p-2 rounded-lg border transition-all ${
+                                                  winnerId && winnerId === p1Id && p1Id !== null
+                                                    ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400 font-bold'
+                                                    : 'bg-zinc-900/50 border-transparent text-zinc-300'
+                                                }`}>
+                                                  <span className="text-xs truncate block">{p1Name}</span>
+                                                </div>
+                                                <span className="text-[10px] font-mono font-bold text-zinc-500 italic">VS</span>
+                                                <div className={`flex-1 text-center p-2 rounded-lg border transition-all ${
+                                                  winnerId && winnerId === p2Id && p2Id !== null
+                                                    ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400 font-bold'
+                                                    : 'bg-zinc-900/50 border-transparent text-zinc-300'
+                                                }`}>
+                                                  <span className="text-xs truncate block">{p2Name}</span>
+                                                </div>
+                                              </div>
+
+                                              {/* Admin status adjustments */}
+                                              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-zinc-900">
+                                                <div>
+                                                  <label className="block text-[8px] font-mono text-zinc-500 uppercase mb-0.5">Match Status</label>
+                                                  <select
+                                                    value={match.status}
+                                                    onChange={(e) => handleUpdateMatch(match.id, t.id, e.target.value as any, winnerId || null)}
+                                                    className="w-full bg-zinc-900 border border-zinc-805 text-[9px] font-mono px-1.5 py-1 text-zinc-300 focus:outline-none rounded"
+                                                  >
+                                                    <option value="pending">Pending</option>
+                                                    <option value="live">Live</option>
+                                                    <option value="completed">Completed</option>
+                                                  </select>
+                                                </div>
+                                                <div>
+                                                  <label className="block text-[8px] font-mono text-zinc-500 uppercase mb-0.5">Flag Winner</label>
+                                                  <select
+                                                    value={winnerId || ''}
+                                                    onChange={(e) => handleUpdateMatch(match.id, t.id, match.status, e.target.value || null)}
+                                                    disabled={p1Name === 'BYE' && p2Name === 'BYE'}
+                                                    className="w-full bg-zinc-900 border border-zinc-805 text-[9px] font-mono px-1.5 py-1 text-zinc-200 focus:outline-none rounded disabled:opacity-40"
+                                                  >
+                                                    <option value="">No Winner Set</option>
+                                                    {p1Id && <option value={p1Id}>{p1Name}</option>}
+                                                    {p2Id && <option value={p2Id}>{p2Name}</option>}
+                                                  </select>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="text-center py-6 border border-dashed border-zinc-800 rounded-xl">
+                                <p className="text-xs text-zinc-500 font-mono italic">No bracket matches formed yet for this tournament.</p>
+                                <p className="text-[10px] text-zinc-600 mt-1">Configure seed limits and generate matches to activate the arena tracker.</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -801,39 +2874,43 @@ export default function AdminPanel({
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {pendingPayments.map(user => (
-                  <div key={user.id} className="p-4 bg-zinc-950/70 border border-zinc-805 rounded-xl space-y-3 font-mono text-xs">
-                    <div className="flex justify-between items-center bg-zinc-90 w-full flex-wrap">
-                      <span className="font-bold text-white text-sm">{user.gamerName}</span>
+                {pendingPayments.map(payment => (
+                  <div key={payment.id} className="p-4 bg-zinc-950/70 border border-zinc-805 rounded-xl space-y-3 font-mono text-xs">
+                    <div className="flex justify-between items-center bg-zinc-90 w-full flex-wrap gap-2">
+                      <span className="font-bold text-white text-xs truncate max-w-[200px]" title={payment.userEmail}>{payment.userEmail}</span>
                       <span className="bg-amber-400/10 border border-amber-400/20 text-amber-400 font-mono font-bold text-[9px] px-2 py-0.5 rounded uppercase">
-                        {user.membership} Upgrade Request
+                        {payment.plan} Upgrade Request
                       </span>
                     </div>
 
                     <div className="space-y-1 bg-zinc-900 border border-zinc-850 p-3 rounded-lg text-[10px]/relaxed text-zinc-400">
-                      <p>Txn Reference ID: <strong className="text-white font-sans text-xs">{user.membershipTxId}</strong></p>
+                      <p>Amount: <strong className="text-white">₹{payment.amount}</strong></p>
+                      <p>Txn Reference ID: <strong className="text-white font-sans text-xs">{payment.transactionId}</strong></p>
+                      {payment.couponApplied && (
+                        <p>Coupon Applied: <strong className="text-emerald-400 font-sans text-xs">{payment.couponApplied}</strong></p>
+                      )}
                       <p>Screenshot Verification Proof: </p>
-                      <a href={user.membershipScreenshot} target="_blank" rel="noopener noreferrer" className="text-cyan-400 truncate block hover:underline">
-                        {user.membershipScreenshot}
+                      <a href={payment.screenshotUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-400 truncate block hover:underline">
+                        {payment.screenshotUrl}
                       </a>
                     </div>
 
                     {/* Screenshot image viewport snippet */}
-                    {user.membershipScreenshot && (
+                    {payment.screenshotUrl && payment.screenshotUrl.trim() !== "" && (
                       <div className="border border-zinc-800/60 rounded overflow-hidden max-h-32 bg-black flex items-center justify-center">
-                        <img src={user.membershipScreenshot} className="object-cover max-h-full max-w-full" />
+                        <img src={payment.screenshotUrl} className="object-cover max-h-full max-w-full" />
                       </div>
                     )}
 
                     <div className="flex gap-2 font-mono pt-2 border-t border-zinc-800/50">
                       <button
-                        onClick={() => onApprovePayment(user.id)}
+                        onClick={() => handleApprove(payment.id)}
                         className="flex-1 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-black text-[10px] tracking-wide"
                       >
                         ✓ VERIFY & UNLOCK
                       </button>
                       <button
-                        onClick={() => onRejectPayment(user.id)}
+                        onClick={() => handleReject(payment.id)}
                         className="px-3.5 py-1.5 rounded-lg bg-rose-500/20 border border-rose-500 text-rose-500 hover:bg-rose-500 hover:text-white text-[10px] font-bold"
                       >
                         ✕ DECLINE
@@ -902,36 +2979,126 @@ export default function AdminPanel({
               </div>
             </div>
 
-            {/* QR upload gateway settings */}
-            <div className="space-y-4">
-              <h3 className="text-base font-extrabold text-white uppercase tracking-wide border-b border-zinc-800/40 pb-2">Core dynamic UPI QR gateway configuration</h3>
+              {/* QR upload gateway settings */}
+              <div className="space-y-4">
+                <h3 className="text-base font-extrabold text-white uppercase tracking-wide border-b border-zinc-800/40 pb-2">Core dynamic UPI QR gateway configuration</h3>
 
-              <form onSubmit={submitQrCodeUpdate} className="space-y-3 bg-zinc-950 p-4 border border-zinc-800 rounded-xl font-mono text-xs">
-                <div>
-                  <label className="block text-[10px] uppercase text-zinc-500 font-bold mb-1">Image URL of the Scanner Code</label>
-                  <input
-                    type="url"
-                    required
-                    className="w-full bg-zinc-950 border border-zinc-800 text-[11px] text-white px-3 py-2 focus:border-red-500 outline-none rounded"
-                    value={qrCodeInput}
-                    onChange={(e) => setQrCodeInput(e.target.value)}
-                  />
-                </div>
-
-                {qrCodeInput && (
-                  <div className="border border-zinc-800 rounded overflow-hidden max-w-sm max-h-48 flex justify-center items-center p-2 bg-white">
-                    <img src={qrCodeInput} className="object-contain max-h-full max-w-full" />
+                <form onSubmit={submitQrCodeUpdate} className="space-y-4 bg-zinc-950 p-6 border border-zinc-800 rounded-2xl font-mono text-xs">
+                  {/* 1. UPI ID Section */}
+                  <div>
+                    <label className="block text-[10px] uppercase text-zinc-500 font-bold mb-1 tracking-wider">UPI ID for Direct Transfers</label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-grow">
+                        <input
+                          type="text"
+                          required
+                          className="w-full bg-zinc-950 border border-zinc-800 text-[12px] text-white px-3 py-2.5 focus:border-red-500 outline-none rounded-lg"
+                          value={upiIdInput}
+                          onChange={(e) => setUpiIdInput(e.target.value)}
+                          placeholder="e.g. careerhub@ybl"
+                        />
+                      </div>
+                      {upiIdInput && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(upiIdInput);
+                            addToast("UPI ID copied to clipboard!", "success");
+                          }}
+                          className="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 px-3 rounded-lg flex items-center justify-center gap-1 font-bold text-[11px] transition-colors shrink-0 cursor-pointer"
+                          title="Copy UPI ID"
+                        >
+                          <Copy className="w-4 h-4 text-zinc-400" />
+                          <span className="hidden sm:inline">Copy</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
 
-                <button
-                  type="submit"
-                  className="w-full bg-amber-400 hover:bg-amber-500 text-zinc-950 py-2.5 rounded font-black text-xs"
-                >
-                  SAVE UPI SCANNERS LOG
-                </button>
-              </form>
-            </div>
+                  {/* 2. QR Code upload block */}
+                  <div>
+                    <span className="block text-[10px] uppercase text-zinc-500 font-bold mb-1 tracking-wider">Payment QR Code image</span>
+                    
+                    {/* Hidden Input file selector */}
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      accept="image/*"
+                      onChange={handleQrFileChange}
+                      className="hidden"
+                    />
+
+                    {qrCodeInput && qrCodeInput.trim() !== "" && !qrCodeInput.startsWith('file:///') ? (
+                      <div className="space-y-3">
+                        {/* Image Preview container */}
+                        <div className="border border-zinc-800 rounded-xl overflow-hidden max-w-xs p-3 bg-white flex flex-col items-center justify-center">
+                          <img src={qrCodeInput} alt="Uploaded QR preview" className="object-contain max-h-48 rounded" referrerPolicy="no-referrer" />
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {/* Replace QR button */}
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={uploadingQr}
+                            className="px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg hover:bg-zinc-800 text-[11px] text-zinc-300 hover:text-white flex items-center gap-1 font-bold transition-all disabled:opacity-50 cursor-pointer"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${uploadingQr ? 'animate-spin' : ''}`} />
+                            Replace QR Scanner
+                          </button>
+
+                          {/* Delete QR button */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQrCodeInput('');
+                              addToast("QR cleared. Save settings below to finalize database update.", "info");
+                            }}
+                            disabled={uploadingQr}
+                            className="px-3 py-1.5 bg-zinc-900 border border-rose-500/20 text-rose-400 rounded-lg hover:bg-rose-500/10 text-[11px] flex items-center gap-1 font-bold transition-all disabled:opacity-50 cursor-pointer"
+                          >
+                            <Trash className="w-3.5 h-3.5" />
+                            Delete QR
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Elegant Select trigger box */
+                      <div
+                        onClick={() => !uploadingQr && fileInputRef.current?.click()}
+                        className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
+                          uploadingQr 
+                            ? 'border-amber-400 bg-amber-500/5' 
+                            : 'border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-900/40'
+                        }`}
+                      >
+                        {uploadingQr ? (
+                          <div className="flex flex-col items-center space-y-2 py-2">
+                            <RefreshCw className="w-6 h-6 text-amber-400 animate-spin" />
+                            <p className="text-[11px] text-zinc-400 font-bold">Uploading Payment QR asset...</p>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center space-y-2 py-1 text-zinc-400 hover:text-zinc-200">
+                            <Upload className="w-6 h-6 text-zinc-500" />
+                            <p className="text-[11px] font-bold">Upload Payment QR Code</p>
+                            <span className="text-[9px] text-zinc-500">Select JPEG, PNG, or SVG image file from your computer</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Submit Update Button */}
+                  <button
+                    type="submit"
+                    disabled={uploadingQr}
+                    className="w-full bg-amber-400 hover:bg-amber-500 text-zinc-950 py-3 rounded-lg font-black text-xs uppercase tracking-wider transition-all disabled:opacity-50 mt-2 flex items-center justify-center gap-1.5"
+                  >
+                    <Check className="w-4 h-4" />
+                    SAVE DYNAMIC UPI GATEWAY SETTINGS
+                  </button>
+                </form>
+              </div>
           </div>
         )}
 
@@ -1185,6 +3352,613 @@ export default function AdminPanel({
                     <button onClick={() => submitRemovePremiumReward(r.id)} className="text-rose-500 hover:text-rose-600 p-1 font-bold">Delete</button>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* Platinum Theme Assets Manager */}
+            <div className="p-5 bg-zinc-950/45 rounded-xl border border-rose-500/30 space-y-4">
+              <div className="flex items-center justify-between border-b border-rose-500/20 pb-2">
+                <h4 className="font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-rose-450 via-fuchsia-400 to-indigo-400 flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-rose-500 animate-spin [animation-duration:10s]" />
+                  PLATINUM THEME ASSETS & TEMPLATES CONTROL
+                </h4>
+                <span className="text-[8px] bg-rose-500/10 text-rose-400 px-2 py-0.5 rounded font-mono font-bold uppercase tracking-widest leading-none">
+                  VIP Storage Node: platinum_profile_themes
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Visual Asset Uploader UI */}
+                <div className="space-y-3 font-mono text-xs">
+                  <h5 className="font-bold text-white flex items-center gap-1.5 uppercase text-[10px]">
+                    🌌 Live Upload to Supabase Storage
+                  </h5>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-bold">Select Target Theme Component Type</label>
+                    <select
+                      className="w-full bg-zinc-950 border border-zinc-800 text-zinc-300 px-3 py-2 rounded text-[11px]"
+                      value={platinumUploadType}
+                      onChange={(e) => setPlatinumUploadType(e.target.value as any)}
+                    >
+                      <option value="background">Background Theme Wallpaper (Image/GIF)</option>
+                      <option value="overlay">HUD Overlay Scanframe (HUD elements/decals)</option>
+                      <option value="card">Stats Card Backdrop Gradient Card</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 uppercase mb-1 font-bold">Select File (Max 15MB)</label>
+                    <div className="relative border border-dashed border-zinc-800 hover:border-rose-500/40 rounded-xl p-5 bg-zinc-950/60 transition-all text-center flex flex-col justify-center items-center h-32">
+                      <input 
+                        type="file" 
+                        accept="image/*" 
+                        onChange={handleThemeAssetUpload} 
+                        disabled={uploadingThemeAsset}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                      {uploadingThemeAsset ? (
+                        <div className="space-y-1 py-2">
+                          <RefreshCw className="w-5 h-5 text-rose-550 animate-spin mx-auto animate-pulse" />
+                          <span className="text-[10px] text-zinc-400 block font-bold">SAVING TO SUPABASE...</span>
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5 py-1">
+                          <Upload className="w-6 h-6 text-zinc-500 mx-auto" />
+                          <span className="text-[10px] text-zinc-300 block font-bold leading-none">CLICK OR DRAG FILE HERE</span>
+                          <span className="text-[8px] text-zinc-550 block">PNG, JPEG, SVG or animated GIF templates</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {platinumUploadUrl && (
+                    <div className="p-3 bg-zinc-950 border border-rose-500/20 rounded-xl space-y-1.5">
+                      <span className="text-[9px] text-rose-455 font-bold block uppercase">SUPABASE STORAGE CDN LINK:</span>
+                      <div className="flex gap-2">
+                        <input 
+                          type="text" 
+                          readOnly 
+                          value={platinumUploadUrl} 
+                          className="w-full bg-zinc-900 text-[10px] px-2 py-1 border border-zinc-800 text-zinc-300 rounded font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(platinumUploadUrl);
+                            addToast("CDN URL copied to clipboard!", "success");
+                          }}
+                          className="bg-zinc-850 hover:bg-zinc-800 text-white font-bold px-2 py-1 rounded text-[10px] uppercase cursor-pointer"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Preconfigured catalog list in the workspace */}
+                <div className="space-y-3 font-mono text-xs">
+                  <h5 className="font-bold text-white flex items-center gap-1.5 uppercase text-[10px]">
+                    📋 Pre-built Theme Presets (Click any to copy URL)
+                  </h5>
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1 text-[9px]">
+                    
+                    <div className="p-2.5 bg-zinc-950 border border-zinc-900 rounded-xl flex justify-between items-center">
+                      <div>
+                        <span className="text-cyan-400 font-bold block">Preset Neon Grid Backdrop</span>
+                        <p className="text-zinc-550 text-[8px] truncate max-w-xs mt-0.5">https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80</p>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText("https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80");
+                          addToast("Neon Grid backdrop URL copied!", "success");
+                        }}
+                        className="bg-zinc-900 px-2 py-1 rounded border border-zinc-800 text-zinc-300 hover:bg-rose-500/10 hover:text-rose-400 cursor-pointer"
+                      >
+                        Copy
+                      </button>
+                    </div>
+
+                    <div className="p-2.5 bg-zinc-950 border border-zinc-900 rounded-xl flex justify-between items-center">
+                      <div>
+                        <span className="text-indigo-400 font-bold block">Preset Cyber Scanline Matrix HUD</span>
+                        <p className="text-zinc-550 text-[8px] truncate max-w-xs mt-0.5">https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=800&auto=format&fit=crop&q=80</p>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText("https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=800&auto=format&fit=crop&q=80");
+                          addToast("Cyber Scanline HUD overlay URL copied!", "success");
+                        }}
+                        className="bg-zinc-900 px-2 py-1 rounded border border-zinc-800 text-zinc-300 hover:bg-rose-500/10 hover:text-rose-400 cursor-pointer"
+                      >
+                        Copy
+                      </button>
+                    </div>
+
+                    <div className="p-2.5 bg-zinc-950 border border-zinc-900 rounded-xl flex justify-between items-center">
+                      <div>
+                        <span className="text-yellow-500 font-bold block">Preset Obsidian Gradient Card Backdrop</span>
+                        <p className="text-zinc-550 text-[8px] truncate max-w-xs mt-0.5">https://images.unsplash.com/photo-1563089145-599997674d42?w=500&auto=format&fit=crop&q=80</p>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText("https://images.unsplash.com/photo-1563089145-599997674d42?w=500&auto=format&fit=crop&q=80");
+                          addToast("Obsidian gradient card URL copied!", "success");
+                        }}
+                        className="bg-zinc-900 px-2 py-1 rounded border border-zinc-800 text-zinc-300 hover:bg-rose-500/10 hover:text-rose-400 cursor-pointer"
+                      >
+                        Copy
+                      </button>
+                    </div>
+
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'diamonds' && (
+          <div className="space-y-8 font-mono text-xs">
+            <div>
+              <h3 className="text-sm md:text-base font-extrabold text-white uppercase tracking-wide border-b border-zinc-800 pb-2 flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-amber-500 animate-pulse" />
+                DIAMOND MICRO-ECONOMY VAULT & LEDGER PORTAL
+              </h3>
+              <p className="text-zinc-400 mt-1 font-sans font-normal text-[11px]/relaxed">
+                Approve QR top-ups, process UPI rewards withdrawal dispatch desk, and force manually credited wallets with custom reasons.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Manual Balance Adjustment Form - Part 15 */}
+              <div className="bg-zinc-950/40 p-5 rounded-2xl border border-zinc-850 space-y-4">
+                <h4 className="font-extrabold text-white flex items-center gap-1.5 uppercase text-[11px] tracking-wider text-amber-500">
+                  ⚡ Force Balance Adjustment (Admin Manual Credit)
+                </h4>
+                <form onSubmit={handleAdjustDiamonds} className="space-y-3.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[9.5px] text-zinc-550 uppercase mb-1 font-bold">Select Active Player Profile</label>
+                      <select
+                        className="w-full bg-zinc-900 border border-zinc-800 text-zinc-300 px-2.5 py-2 rounded text-[11px] focus:outline-none focus:border-amber-500 font-sans"
+                        value={selectedAdjustUserId}
+                        onChange={e => {
+                          setSelectedAdjustUserId(e.target.value);
+                          const found = users.find(u => u.id === e.target.value);
+                          if (found && found.email) {
+                            setAdjustEmail(found.email);
+                          }
+                        }}
+                      >
+                        <option value="">-- Choose Operative --</option>
+                        {users.map(u => (
+                          <option key={u.id} value={u.id}>
+                            {u.gamerName} ({u.email || 'No email'})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9.5px] text-zinc-550 uppercase mb-1 font-bold">OR Type User Email *</label>
+                      <input
+                        type="email"
+                        placeholder="gamer@gmail.com"
+                        className="w-full bg-zinc-900 border border-zinc-800 text-white px-2.5 py-2 rounded text-[11px] focus:outline-none focus:border-amber-500"
+                        value={adjustEmail}
+                        onChange={e => setAdjustEmail(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[9.5px] text-zinc-550 uppercase mb-1 font-bold">Wallet Type *</label>
+                      <select
+                        required
+                        className="w-full bg-zinc-900 border border-zinc-800 text-zinc-350 px-2.5 py-2 rounded text-[11px] focus:outline-none focus:border-amber-500"
+                        value={adjustWalletType}
+                        onChange={e => setAdjustWalletType(e.target.value as 'topup' | 'winning')}
+                      >
+                        <option value="topup">Top-up Balance (Non-Withdrawable)</option>
+                        <option value="winning">Winning Balance (Withdrawable, 1💎 = ₹1)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9.5px] text-zinc-550 uppercase mb-1 font-bold">Diamond Amount Quantity *</label>
+                      <input
+                        type="number"
+                        required
+                        className="w-full bg-zinc-900 border border-zinc-800 text-white px-2.5 py-2 rounded text-[11px] focus:outline-none focus:border-amber-500 font-mono"
+                        placeholder="e.g. 100 or -50"
+                        value={adjustAmount}
+                        onChange={e => setAdjustAmount(parseInt(e.target.value, 10) || 0)}
+                      />
+                      <span className="text-[8px] text-zinc-500 leading-tight mt-0.5 block font-sans font-normal">Use negative value to deduct diamonds.</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[9.5px] text-zinc-550 uppercase mb-1 font-bold">Manual Adjustment Reason / Note *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Compensated for tournament lobby issue / manual cash purchase"
+                      className="w-full bg-zinc-900 border border-zinc-800 text-white px-2.5 py-2 rounded text-[11.5px] focus:outline-none focus:border-amber-500 font-sans"
+                      value={adjustReason}
+                      onChange={e => setAdjustReason(e.target.value)}
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 bg-gradient-to-r from-amber-600 to-yellow-500 text-black hover:opacity-95 rounded-xl font-black text-[10px] uppercase tracking-wider cursor-pointer"
+                  >
+                    Authorize Split Balance manual credit
+                  </button>
+                </form>
+              </div>
+
+              {/* Pending Approvals Queue */}
+              <div className="bg-zinc-950/40 p-5 rounded-2xl border border-zinc-850 space-y-4">
+                <h4 className="font-extrabold text-white flex items-center gap-1.5 uppercase text-[11px] tracking-wider text-rose-450">
+                  ⌛ Pending QR Scanning Approvals ({diamondTransactions.filter(t => t.status === 'pending').length})
+                </h4>
+
+                <div className="space-y-3 max-h-[290px] overflow-y-auto pr-1">
+                  {diamondTransactions.filter(t => t.status === 'pending').length === 0 ? (
+                    <div className="text-center py-10 text-zinc-550">
+                      <p className="font-sans italic font-normal">All scanner upload transactions stand processed.</p>
+                    </div>
+                  ) : (
+                    diamondTransactions.filter(t => t.status === 'pending').map((txn: any) => {
+                      const payee = users.find(u => u.id === txn.user_id);
+                      return (
+                        <div key={txn.id} className="p-3.5 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2.5">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="font-bold text-white block text-[11.5px]">{payee?.gamerName || 'Unknown Player'}</span>
+                              <span className="text-[9px] text-zinc-550 font-sans block">{payee?.email}</span>
+                            </div>
+                            <span className="text-emerald-400 font-black text-xs font-mono">
+                              +{txn.total_credited || txn.total_amount || txn.diamonds} 💎
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-[9.5px] border-t border-zinc-800/40 pt-2 text-zinc-450">
+                            <p>Price: <span className="text-white font-bold font-sans">₹{txn.price_paid}</span></p>
+                            <p>UTR: <span className="text-white font-mono">{txn.transaction_id || 'N/A'}</span></p>
+                          </div>
+
+                          {txn.payment_screenshot_url && (
+                            <div className="p-1 px-1.5 bg-zinc-950 rounded text-center border border-zinc-800">
+                              <a
+                                href={txn.payment_screenshot_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[9px] text-cyan-400 font-bold hover:underline inline-flex items-center gap-1 select-none font-mono uppercase"
+                              >
+                                <Eye className="w-3 h-3" /> View Deposit Receipt Image
+                              </a>
+                            </div>
+                          )}
+
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveDiamondTxn(txn.id)}
+                              className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-[9px] uppercase tracking-wide cursor-pointer transition flex items-center justify-center gap-1 border border-emerald-500/10"
+                            >
+                              <Check className="w-3.5 h-3.5" /> Credit Diamonds
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRejectDiamondTxn(txn.id)}
+                              className="py-1.5 px-3 bg-zinc-950 hover:bg-rose-955 text-rose-450 hover:text-white font-bold rounded text-[9px] uppercase cursor-pointer transition border border-zinc-800 hover:border-rose-900"
+                            >
+                              Reject Txn
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Part 15: Admin Pending Withdrawals Review Desk */}
+            <div className="bg-zinc-950/40 p-5 rounded-2xl border border-zinc-850 space-y-4">
+              <h4 className="font-extrabold text-white flex items-center gap-1.5 uppercase text-[11px] tracking-wider text-cyan-400">
+                🏧 Pending Rewards Payout Withdrawals Desk ({adminWithdrawals.filter(w => w.status !== 'paid' && w.status !== 'rejected').length})
+              </h4>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[480px] overflow-y-auto pr-1">
+                {adminWithdrawals.filter(w => w.status !== 'paid' && w.status !== 'rejected').length === 0 ? (
+                  <div className="col-span-full text-center py-12 text-zinc-550 border border-zinc-900 rounded-xl bg-zinc-900/10">
+                    <p className="font-sans italic font-normal">All payout reward dispatch tickets are fully settled.</p>
+                  </div>
+                ) : (
+                  adminWithdrawals.filter(w => w.status !== 'paid' && w.status !== 'rejected').map((wr: any) => {
+                    const beneficiary = users.find(u => u.id === wr.user_id);
+                    return (
+                      <div key={wr.id} className="p-4 bg-zinc-900 border border-zinc-800 rounded-2xl space-y-3 flex flex-col justify-between relative overflow-hidden">
+                        <div className="absolute top-0 right-0 w-12 h-12 bg-cyan-500/10 rounded-bl-full pointer-events-none"></div>
+                        <div className="space-y-3">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="font-black text-white text-[12.5px] tracking-wide block">{beneficiary?.gamerName || 'Unknown Player'}</span>
+                              <span className="text-[9px] text-zinc-500 font-sans block font-medium">{beneficiary?.email || 'N/A'}</span>
+                            </div>
+                            <span className="text-cyan-400 font-mono font-black text-xs px-2.5 py-1 bg-zinc-950 rounded-xl border border-zinc-800 leading-none">
+                              ₹{wr.amount}
+                            </span>
+                          </div>
+
+                          <div className="space-y-2 text-[9.5px]/relaxed border-t border-zinc-800/40 pt-2 text-zinc-400">
+                            <p className="flex justify-between">
+                              <span className="text-zinc-550 uppercase">UPI Address:</span>
+                              <span className="text-cyan-300 font-black font-mono select-all bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-850">{wr.upi_id}</span>
+                            </p>
+                            <p className="flex justify-between">
+                              <span className="text-zinc-550 uppercase">Holder Name:</span>
+                              <span className="text-zinc-200 font-bold">{wr.account_holder_name}</span>
+                            </p>
+                            {wr.phone && (
+                              <p className="flex justify-between">
+                                <span className="text-zinc-550 uppercase">Linked Phone:</span>
+                                <span className="text-zinc-300 font-mono font-bold">{wr.phone}</span>
+                              </p>
+                            )}
+                            <p className="flex justify-between">
+                              <span className="text-zinc-550 uppercase">Filed On:</span>
+                              <span className="text-zinc-350">{wr.created_at ? new Date(wr.created_at).toLocaleString() : 'N/A'}</span>
+                            </p>
+                            {wr.note && (
+                              <p className="bg-zinc-950/60 p-2 rounded border border-zinc-820 italic text-zinc-500 font-sans leading-relaxed text-[8.5px]">
+                                User Note: "{wr.note}"
+                              </p>
+                            )}
+                            <p className="flex justify-between">
+                              <span className="text-zinc-550 uppercase">Status:</span>
+                              <span className={`font-extrabold uppercase text-[8px] px-1.5 py-0.5 rounded ${
+                                wr.status === 'approved' ? 'bg-amber-500/10 text-amber-400 animate-pulse border border-amber-500/20' : 'bg-zinc-800 text-zinc-400'
+                              }`}>
+                                {wr.status}
+                              </span>
+                            </p>
+                          </div>
+
+                          {wr.qr_url && (
+                            <div className="p-1 px-1.5 bg-zinc-950 rounded text-center border border-zinc-800">
+                              <a
+                                href={wr.qr_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[9px] text-amber-500 font-bold hover:underline inline-flex items-center gap-1 select-none font-mono uppercase"
+                              >
+                                <Eye className="w-3.5 h-3.5" /> View User QR Code scanner
+                              </a>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="pt-3 border-t border-zinc-800/40">
+                          {activeWithdrawalId === wr.id ? (
+                            <div className="space-y-2 p-2 bg-zinc-950 rounded-xl border border-rose-950/60">
+                              <label className="block text-[8.5px] text-zinc-500 uppercase font-black tracking-wider">Required Rejection Reason *</label>
+                              <textarea
+                                required
+                                className="w-full bg-zinc-900 border border-zinc-800 text-white p-2 rounded text-[10px] focus:outline-none focus:border-rose-500 font-sans"
+                                placeholder="e.g. UPI address is inactive / verified fraud profile logs"
+                                value={withdrawalRejectNote}
+                                onChange={e => setWithdrawalRejectNote(e.target.value)}
+                              />
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleRejectWithdrawal(wr.id, withdrawalRejectNote)}
+                                  className="flex-1 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded font-bold text-[9px] uppercase transition-all"
+                                >
+                                  Submit Rejection Refund
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveWithdrawalId(null)}
+                                  className="px-2.5 py-1.5 bg-zinc-850 hover:bg-zinc-800 text-zinc-400 rounded text-[9px] uppercase"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              <div className="flex gap-2">
+                                {wr.status === 'pending' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleApproveWithdrawal(wr.id)}
+                                    className="flex-1 py-1.5 bg-sky-600 hover:bg-sky-750 text-white font-extrabold rounded text-[9.5px] uppercase transition cursor-pointer flex items-center justify-center gap-1"
+                                  >
+                                    <Check className="w-3.5 h-3.5" /> Approve Payout
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleMarkPaidWithdrawal(wr.id)}
+                                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded text-[9.5px] uppercase transition cursor-pointer flex items-center justify-center gap-1"
+                                >
+                                  <Check className="w-3.5 h-3.5" /> Mark PAID (UPI sent)
+                                </button>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveWithdrawalId(wr.id);
+                                  setWithdrawalRejectNote('');
+                                }}
+                                className="w-full py-1 bg-zinc-950 hover:bg-rose-955 text-zinc-500 hover:text-white border border-zinc-850 hover:border-zinc-800 rounded font-black text-[9px] uppercase transition"
+                              >
+                                Decline Request
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Global Diamond Transaction Logs */}
+            <div className="bg-zinc-950/40 p-5 rounded-xl border border-zinc-850 space-y-3.5">
+              <h4 className="font-extrabold text-white flex items-center gap-1.5 uppercase text-[11px] tracking-wider text-amber-500">
+                📋 Global Diamond Economy Ledger & Audit Logs ({diamondTransactions.length})
+              </h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-zinc-900 text-[9px] text-zinc-500 uppercase tracking-widest font-bold">
+                      <th className="py-2.5">Player Profile</th>
+                      <th className="py-2.5">Wallet</th>
+                      <th className="py-2.5">Diamonds flow</th>
+                      <th className="py-2.5">Price / reference</th>
+                      <th className="py-2.5">Log reason / note</th>
+                      <th className="py-2.5">Status</th>
+                      <th className="py-2.5">Settled At</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-850/60 text-[10px]">
+                    {diamondTransactions.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="text-center py-8 text-zinc-550 italic font-sans font-normal">
+                          No diamond transactions recorded on database yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      diamondTransactions.map((txn: any) => {
+                        const payee = users.find(u => u.id === txn.user_id);
+                        const isDeduction = txn.total_amount < 0 || txn.diamonds < 0;
+                        const amt = Math.abs(txn.total_amount !== undefined ? txn.total_amount : (txn.diamonds || 0));
+                        return (
+                          <tr key={txn.id} className="hover:bg-zinc-950/20 transition-colors">
+                            <td className="py-2.5 pr-2">
+                              <span className="font-extrabold text-zinc-200">{payee?.gamerName || 'Unknown Player'}</span>
+                              <span className="text-[9px] text-zinc-550 block font-sans font-normal">{payee?.email || 'N/A'}</span>
+                            </td>
+                            <td className="py-2.5">
+                              <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase font-mono border ${
+                                txn.wallet_type === 'winning' 
+                                  ? 'bg-amber-500/10 border-amber-500/20 text-amber-550' 
+                                  : 'bg-cyan-500/10 border-cyan-500/20 text-cyan-400'
+                              }`}>
+                                {txn.wallet_type || 'topup'}
+                              </span>
+                            </td>
+                            <td className={`py-2.5 font-bold font-mono ${isDeduction ? 'text-rose-450' : 'text-emerald-450'}`}>
+                              {isDeduction ? `-${amt}` : `+${amt}`} 💎
+                            </td>
+                            <td className="py-2.5 text-zinc-400 font-mono text-[9px]">
+                              {txn.price_paid > 0 ? `₹${txn.price_paid}` : 'Free'}
+                              <span className="block text-[8px] text-zinc-550 font-sans truncate max-w-[80px]" title={txn.transaction_id}>{txn.transaction_id || 'N/A'}</span>
+                            </td>
+                            <td className="py-2.5 text-zinc-400 font-sans font-normal leading-relaxed text-[9.5px] max-w-[150px] truncate" title={txn.note || txn.transaction_type}>
+                              {txn.note || txn.transaction_type}
+                            </td>
+                            <td className="py-2.5">
+                              <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-black uppercase font-mono border ${
+                                txn.status === 'approved' || txn.status === 'paid'
+                                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                                  : txn.status === 'rejected'
+                                  ? 'bg-rose-500/10 border-rose-500/20 text-rose-450'
+                                  : 'bg-zinc-800 border-zinc-700 text-zinc-450 animate-pulse'
+                              }`}>
+                                {txn.status || 'pending'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 text-zinc-500 font-sans font-normal text-[9.5px]">
+                              {txn.created_at ? new Date(txn.created_at).toLocaleDateString() : 'Just now'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Withdrawal request ledger tracker for admins to audit */}
+            <div className="bg-zinc-950/40 p-5 rounded-xl border border-zinc-850 space-y-3.5">
+              <h4 className="font-extrabold text-white flex items-center gap-1.5 uppercase text-[11px] tracking-wider text-cyan-400">
+                📋 Historical Payout Rewards Settlement Log ({adminWithdrawals.length})
+              </h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-zinc-900 text-[9px] text-zinc-500 uppercase tracking-widest font-bold">
+                      <th className="py-2.5">Player Info</th>
+                      <th className="py-2.5">UPI Details</th>
+                      <th className="py-2.5">Payout Amount</th>
+                      <th className="py-2.5">Official Admin Notes</th>
+                      <th className="py-2.5">Request Status</th>
+                      <th className="py-2.5">Settlement Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-850/60 text-[10px]">
+                    {adminWithdrawals.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="text-center py-8 text-zinc-550 italic font-sans font-normal">
+                          No historical payouts resolved on system yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      adminWithdrawals.map((wr: any) => {
+                        const beneficiary = users.find(u => u.id === wr.user_id);
+                        return (
+                          <tr key={wr.id} className="hover:bg-zinc-950/20 transition-colors">
+                            <td className="py-2.5">
+                              <span className="font-extrabold text-zinc-200">{beneficiary?.gamerName || 'Unknown Player'}</span>
+                              <span className="text-[9.5px] text-zinc-550 block font-sans font-normal">{beneficiary?.email || 'N/A'}</span>
+                            </td>
+                            <td className="py-2.5 font-mono text-[9.5px] text-zinc-400">
+                              <p className="font-bold text-zinc-300">{wr.upi_id}</p>
+                              <p className="text-[8px] text-zinc-500">Holder: {wr.account_holder_name}</p>
+                            </td>
+                            <td className="py-2.5 text-white font-extrabold font-mono text-xs">
+                              ₹{wr.amount}
+                            </td>
+                            <td className="py-2.5 text-zinc-455 font-sans font-normal text-[9.5px] leading-relaxed max-w-[180px] truncate" title={wr.admin_note}>
+                              {wr.admin_note || 'N/A'}
+                            </td>
+                            <td className="py-2.5">
+                              <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-black uppercase font-mono border ${
+                                wr.status === 'paid'
+                                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                                  : wr.status === 'approved'
+                                  ? 'bg-sky-500/10 border-sky-500/20 text-sky-400'
+                                  : wr.status === 'rejected'
+                                  ? 'bg-rose-500/10 border-rose-500/20 text-rose-450'
+                                  : 'bg-zinc-800 border-zinc-700 text-zinc-400 animate-pulse'
+                              }`}>
+                                {wr.status.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="py-2.5 text-zinc-500 font-sans font-normal text-[9.5px]">
+                              {wr.paid_at ? new Date(wr.paid_at).toLocaleDateString() : wr.created_at ? new Date(wr.created_at).toLocaleDateString() : 'Just now'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>

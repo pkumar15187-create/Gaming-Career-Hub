@@ -62,9 +62,39 @@ export interface UserProfile {
 
   // Comments & endorses
   comments?: ProfileComment[];
+  role?: string;
+
+  // XP, Levels & Claim Daily rewards
+  xp?: number;
+  level?: number;
+  lastDailyClaimed?: string;
+  last_daily_reward_claimed_at?: string;
+  coins?: number;
+  diamonds?: number;
+  topup_diamonds?: number;
+  winning_diamonds?: number;
 
   // Local saves
   savedPlayers: string[]; // array of userIds
+
+  // Database Premium properties
+  premiumBadge?: string;
+  premiumFrame?: string;
+  premiumBanner?: string;
+
+  active_banner_url?: string;
+  selected_banner?: string;
+  active_badge_url?: string;
+  selected_badge?: string;
+  active_frame_url?: string;
+  selected_frame?: string;
+  frame_shape?: 'circle' | 'square';
+  unlocked_stickers?: string[];
+  platinum_theme_enabled?: boolean;
+  platinum_background_url?: string;
+  platinum_overlay_url?: string;
+  platinum_profile_card_url?: string;
+  platinum_hud_assets?: any; // JSON string or parsed object
 }
 
 export interface ProfileComment {
@@ -87,6 +117,7 @@ export interface Team {
   ranking: number;
   creatorId: string;
   creatorGamerName: string;
+  isFeatured?: boolean;
   members: {
     userId: string;
     username: string;
@@ -111,6 +142,20 @@ export interface TournamentRegistrant {
   registeredAt: string;
 }
 
+export interface DbTournamentRegistration {
+  id: string;
+  tournament_id: string;
+  user_id: string;
+  team_id?: string | null;
+  registration_type: 'solo' | 'team';
+  status: 'pending' | 'approved' | 'rejected';
+  payment_status: 'pending' | 'paid' | 'unneeded' | 'rejected';
+  transaction_id?: string | null;
+  payment_screenshot_url?: string | null;
+  registered_at: string;
+}
+
+
 export interface TournamentMatch {
   id: string;
   player1: string;
@@ -130,15 +175,21 @@ export interface TournamentRound {
 export interface Tournament {
   id: string;
   title: string;
+  description?: string;
   game: string;
-  prizePool: string;
+  banner_url?: string;
+  prizePool: string; // Keep prizePool for fallback compatibility
+  prize_pool?: string;
+  entry_fee?: string;
+  max_players?: number;
+  max_teams: number;
   rules: string[];
   schedule: {
     date: string;
     event: string;
   }[];
   registrationType: 'solo' | 'team';
-  status: 'upcoming' | 'ongoing' | 'completed';
+  status: 'upcoming' | 'ongoing' | 'completed' | 'live' | 'cancelled'; // Expand statuses
   registrants: TournamentRegistrant[];
   winners: {
     rank: string;
@@ -146,7 +197,10 @@ export interface Tournament {
     prize: string;
   }[];
   bracket: TournamentRound[];
-  maxTeams: number;
+  registration_deadline?: string;
+  tournament_start?: string;
+  tournament_end?: string;
+  created_at?: string;
 }
 
 export interface SponsorApplication {
@@ -210,6 +264,7 @@ export interface PremiumReward {
 
 export interface AdminSettings {
   qrCodeUrl: string;
+  upiId?: string;
   activeCoupons: {
     code: string;
     discountPercent: number; // e.g. 20 for 20%
@@ -220,3 +275,73 @@ export interface AdminSettings {
   profileBanners?: ProfileBanner[];
   premiumRewards?: PremiumReward[];
 }
+
+export interface DbPayment {
+  id: string;
+  userId: string;
+  userEmail?: string;
+  plan: 'Silver' | 'Gold' | 'Platinum';
+  amount: number;
+  transactionId: string;
+  status: 'pending' | 'approved' | 'rejected';
+  screenshotUrl?: string;
+  couponApplied?: string;
+  createdAt?: string;
+}
+
+export interface DbTournamentMatch {
+  id: string;
+  tournamentId: string;
+  roundNumber: number;
+  matchNumber: number;
+  player1UserId?: string | null;
+  player2UserId?: string | null;
+  team1Id?: string | null;
+  team2Id?: string | null;
+  winnerUserId?: string | null;
+  winnerTeamId?: string | null;
+  status: 'pending' | 'live' | 'completed';
+  scheduledAt?: string | null;
+  createdAt?: string;
+  
+  // Virtual UI/display fields
+  player1Name?: string;
+  player2Name?: string;
+  team1Name?: string;
+  team2Name?: string;
+  winnerName?: string;
+}
+
+export interface DiamondTransaction {
+  id: string;
+  user_id: string;
+  wallet_type: 'topup' | 'winning';
+  transaction_type: 'topup_purchase' | 'manual_credit' | 'tournament_entry' | 'tournament_prize' | 'withdraw_request' | 'withdraw_paid' | 'adjustment';
+  diamonds: number;
+  bonus: number;
+  total_amount: number;
+  price_paid: number;
+  status: 'pending' | 'approved' | 'rejected' | 'paid';
+  transaction_id: string | null;
+  payment_screenshot_url: string | null;
+  note: string | null;
+  approved_at: string | null;
+  created_at: string;
+}
+
+export interface WithdrawalRequest {
+  id: string;
+  user_id: string;
+  amount: number;
+  upi_id: string;
+  qr_url: string | null;
+  account_holder_name: string;
+  phone: string | null;
+  note: string | null;
+  status: 'pending' | 'approved' | 'rejected' | 'paid';
+  admin_note: string | null;
+  created_at: string;
+  approved_at: string | null;
+  paid_at: string | null;
+}
+

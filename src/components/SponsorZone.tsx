@@ -2,6 +2,11 @@ import React, { useState } from 'react';
 import { SponsorApplication, UserProfile } from '../types';
 import { Sparkles, DollarSign, Send, Mail, Download, ShieldCheck, UserCheck, Star, Award, BarChart3, HelpCircle, Gamepad2, FileDown, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { getUserProfileBannerStyle, getUserProfileFrameClass } from '../lib/premiumUtils';
+import { GamerAvatar } from './GamerAvatar';
+import { PremiumBanner } from './PremiumBanner';
+import AdSenseSlot from './AdSenseSlot';
+import UploadField from './UploadField';
 
 interface SponsorZoneProps {
   sponsors: SponsorApplication[];
@@ -26,6 +31,7 @@ export default function SponsorZone({
   const [reachEstimates, setReachEstimates] = useState('10k - 25k monthly views');
   const [contactEmail, setContactEmail] = useState(currentUser?.email || '');
   const [offerRequirements, setOfferRequirements] = useState('');
+  const [sponsorDoc, setSponsorDoc] = useState('');
 
   // Sponsoring Brands mock targets
   const SPONSORING_BRANDS = [
@@ -61,6 +67,7 @@ export default function SponsorZone({
     addToast(`Fantastic! Your sponsor pitch application for ${selectedBrand} has been logged in. Wait for reviews.`, "success");
     setPitchDetails('');
     setOfferRequirements('');
+    setSponsorDoc('');
     setShowPitchModal(false);
   };
 
@@ -159,7 +166,7 @@ export default function SponsorZone({
                 featuredGamers.map((gamer) => (
                   <div key={gamer.id} className="p-4 bg-zinc-950/60 border border-zinc-800 rounded-xl flex items-center gap-4">
                     <img
-                      src={gamer.profilePhoto}
+                      src={gamer.profilePhoto || "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150&auto=format&fit=crop&q=80"}
                       alt={gamer.gamerName}
                       referrerPolicy="no-referrer"
                       className="w-12 h-12 rounded-xl object-cover border border-zinc-800"
@@ -196,16 +203,16 @@ export default function SponsorZone({
 
             {currentUser ? (
               <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <img
-                    src={currentUser.profilePhoto || "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150&auto=format&fit=crop&q=80"}
-                    alt={currentUser.gamerName}
-                    referrerPolicy="no-referrer"
-                    className="w-12 h-12 rounded-xl object-cover border-2 border-pink-500"
-                  />
-                  <div>
-                    <h3 className="font-extrabold text-white text-base leading-none">{currentUser.gamerName}</h3>
-                    <p className="text-[10px] text-zinc-400 font-mono mt-1">TIER: {currentUser.membership.toUpperCase()}</p>
+                <div className="relative overflow-hidden rounded-xl border border-zinc-850 bg-zinc-950 pb-3">
+                  <PremiumBanner user={currentUser} heightClass="h-20" />
+
+                  {/* Avatar Overlapping */}
+                  <div className="flex items-center gap-3 px-3 -mt-6 relative z-10">
+                    <GamerAvatar user={currentUser} size="sm" />
+                    <div className="mt-5 min-w-0">
+                      <h3 className="font-extrabold text-white text-sm leading-tight truncate">{currentUser.gamerName}</h3>
+                      <p className="text-[9px] text-pink-400 font-mono font-bold uppercase tracking-widest mt-0.5 leading-none">TIER: {currentUser.membership}</p>
+                    </div>
                   </div>
                 </div>
 
@@ -356,6 +363,17 @@ export default function SponsorZone({
                   />
                 </div>
 
+                <div>
+                  <UploadField 
+                    id="sponsor-doc-upload"
+                    bucketName="sponsor_documents"
+                    label="Attach Media Plan or Pitch Deck (Optional)"
+                    value={sponsorDoc}
+                    onChange={(url) => setSponsorDoc(url)}
+                    placeholder="Drop media deck PDF or image, or select"
+                  />
+                </div>
+
                 {/* Stats note */}
                 <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-850 text-[10px]/snug text-zinc-500">
                   ⚠️ <strong>ALERT:</strong> We will automatically annex your live competitive profile metrics (KD ratio, badges, skill rating MMR) to this application. Ensure your credentials are up to date.
@@ -374,6 +392,9 @@ export default function SponsorZone({
           </div>
         )}
       </AnimatePresence>
+
+      {/* AdSense-ready sponsor marketplace slot */}
+      <AdSenseSlot slotType="sponsor" className="mt-8" />
     </div>
   );
 }

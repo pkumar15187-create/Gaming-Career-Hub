@@ -212,109 +212,7 @@ export const INITIAL_TEAMS: Team[] = [
   }
 ];
 
-export const INITIAL_TOURNAMENTS: Tournament[] = [
-  {
-    id: "tourney-1",
-    title: "Valorant Radiant Arena",
-    game: "Valorant",
-    prizePool: "₹2,50,000",
-    rules: [
-      "1. All teams must have 5 active players.",
-      "2. Safe-play/Anti-cheat mandatory.",
-      "3. Direct disqualification if caught scripting.",
-      "4. Decisions of the career hub admin are final."
-    ],
-    schedule: [
-      { date: "2026-06-15", event: "Qualifiers Round 1" },
-      { date: "2026-06-18", event: "Quarterfinals" },
-      { date: "2026-06-20", event: "Semifinals & Grand Finale" }
-    ],
-    registrationType: "team",
-    status: "upcoming",
-    maxTeams: 16,
-    registrants: [
-      { id: "team-1", name: "Viper Esports", logo: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80", type: "team", status: "approved", contactEmail: "viper@careerhub.gg", registeredAt: "2026-06-01" }
-    ],
-    winners: [],
-    bracket: [
-      {
-        roundNumber: 1,
-        roundName: "Semifinals",
-        matches: [
-          { id: "m-1", player1: "Viper Esports", player2: "Gods Array", score1: undefined, score2: undefined, winner: undefined, stageName: "Semifinal A" },
-          { id: "m-2", player1: "Velocity Esports", player2: "Glitch Squad", score1: undefined, score2: undefined, winner: undefined, stageName: "Semifinal B" }
-        ]
-      },
-      {
-        roundNumber: 2,
-        roundName: "Grand Finals",
-        matches: [
-          { id: "m-3", player1: "Winner Def Semifinal A", player2: "Winner Def Semifinal B", score1: undefined, score2: undefined, winner: undefined, stageName: "Grand Final" }
-        ]
-      }
-    ]
-  },
-  {
-    id: "tourney-2",
-    title: "BGMI Clash of Titans",
-    game: "BGMI",
-    prizePool: "₹5,00,000",
-    rules: [
-      "1. Mobile only. No emulator allowed.",
-      "2. Match points calculation based on standard ESP points table.",
-      "3. Reporting must contain video evidence."
-    ],
-    schedule: [
-      { date: "2026-06-25", event: "Group Stages Map 1 (Erangel)" },
-      { date: "2026-06-26", event: "Group Stages Map 2 (Miramar)" },
-      { date: "2026-06-28", event: "Grand Finals Map 3 & 4" }
-    ],
-    registrationType: "team",
-    status: "upcoming",
-    maxTeams: 20,
-    registrants: [
-      { id: "team-2", name: "Godlike Assaulters", logo: "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150&auto=format&fit=crop&q=80", type: "team", status: "pending", contactEmail: "zephyr@careerhub.gg", registeredAt: "2026-06-05" }
-    ],
-    winners: [],
-    bracket: []
-  },
-  {
-    id: "tourney-3",
-    title: "CS2 Redline Invitational",
-    game: "CS2",
-    prizePool: "₹1,00,000",
-    rules: [
-      "1. Active VAC and anti-cheat checked.",
-      "2. 5v5 Competitive ruleset on Active Duty maps.",
-      "3. Pause requests limited to 2 minutes."
-    ],
-    schedule: [
-      { date: "2026-05-10", event: "Round Robin Group" },
-      { date: "2026-05-12", event: "Grand Finals (BO3)" }
-    ],
-    registrationType: "solo",
-    status: "completed",
-    maxTeams: 8,
-    registrants: [
-      { id: "user-1", name: "ApexViper", logo: "https://images.unsplash.com/photo-1566492031773-4f4e44671857?w=150&auto=format&fit=crop&q=80", type: "solo", status: "approved", contactEmail: "viper@careerhub.gg", registeredAt: "2026-05-01" },
-      { id: "user-4", name: "Frost_Bite", logo: "https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=150&auto=format&fit=crop&q=80", type: "solo", status: "approved", contactEmail: "frost@careerhub.gg", registeredAt: "2026-05-01" }
-    ],
-    winners: [
-      { rank: "1st", name: "ApexViper", prize: "₹60,000" },
-      { rank: "2nd", name: "Frost_Bite", prize: "₹30,000" },
-      { rank: "3rd", name: "CyberSoldier", prize: "₹10,000" }
-    ],
-    bracket: [
-      {
-        roundNumber: 1,
-        roundName: "Grand Finals",
-        matches: [
-          { id: "m-top-1", player1: "ApexViper", player2: "Frost_Bite", score1: 16, score2: 12, winner: "ApexViper", stageName: "Grand Finale" }
-        ]
-      }
-    ]
-  }
-];
+export const INITIAL_TOURNAMENTS: Tournament[] = [];
 
 export const INITIAL_SPONSORS: SponsorApplication[] = [
   {
@@ -355,6 +253,7 @@ export const INITIAL_NOTIFICATIONS: Notification[] = [
 
 export const INITIAL_ADMIN_SETTINGS: AdminSettings = {
   qrCodeUrl: DEFAULT_QR_CODE,
+  upiId: "careerhub@ybl",
   activeCoupons: [
     { code: "GAMER10", discountPercent: 10 },
     { code: "CHAMPION30", discountPercent: 30 },

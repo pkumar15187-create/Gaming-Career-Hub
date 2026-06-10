@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { UserProfile, Team, Tournament, AdminSettings } from '../types';
 import { Trophy, Star, Gamepad2, Award, Zap, Flame, Compass, ChevronDown, Sparkles } from 'lucide-react';
 import { motion } from 'motion/react';
-import { getUserProfileFrameClass, getUserCardGlowClass, getUserTierBadgeIcon } from '../lib/premiumUtils';
+import { getUserProfileFrameClass, getUserCardGlowClass, getUserTierBadgeIcon, getUserNameColorClass, isUserVIP } from '../lib/premiumUtils';
+import AdSenseSlot from './AdSenseSlot';
 
 interface LeaderboardProps {
   users: UserProfile[];
@@ -148,8 +149,13 @@ export default function Leaderboard({ users, teams, tournaments, adminSettings }
                             )}
                           </div>
                           <div>
-                            <p className="font-bold text-white flex items-center gap-1.5 flex-wrap">
-                              {gamer.gamerName}
+                            <p className="font-bold flex items-center gap-1.5 flex-wrap">
+                              <span className={getUserNameColorClass(gamer)}>
+                                {gamer.gamerName}
+                              </span>
+                              {isUserVIP(gamer) && (
+                                <span className="text-[9px] bg-gradient-to-r from-rose-500 to-fuchsia-600 text-white px-1.5 py-0.5 rounded font-mono font-extrabold shadow shadow-rose-500/20">VIP</span>
+                              )}
                               {getUserTierBadgeIcon(gamer, adminSettings) && (
                                 <span className="text-[11px]" title={getUserTierBadgeIcon(gamer, adminSettings)}>
                                   {getUserTierBadgeIcon(gamer, adminSettings).split(' ')[0]}
@@ -233,7 +239,7 @@ export default function Leaderboard({ users, teams, tournaments, adminSettings }
                       <td className="p-4">
                         <div className="flex items-center gap-3">
                           <img
-                            src={team.logo}
+                            src={team.logo || "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150"}
                             alt={team.name}
                             referrerPolicy="no-referrer"
                             className="w-10 h-10 rounded-xl object-cover border border-zinc-800"
@@ -320,6 +326,9 @@ export default function Leaderboard({ users, teams, tournaments, adminSettings }
           </div>
         )}
       </div>
+
+      {/* AdSense-ready leaderboard slot */}
+      <AdSenseSlot slotType="leaderboard" className="mt-8" />
     </div>
   );
 }
