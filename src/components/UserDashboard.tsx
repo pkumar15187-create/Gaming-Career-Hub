@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbTournamentRegistration } from '../types';
+import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbTournamentRegistration, DbTournamentMatch, TournamentResult } from '../types';
 import { User, Shield, Trophy, Users, Heart, Award, Sparkles, Bell, CreditCard, Gift, Save, Send, Trash, Edit2, Gamepad2, Info, Check, Copy, MessageSquare, Receipt, Play, Eye, Star, X, MapPin, UserPlus, FileText, Rss, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getUserProfileFrameClass, getUserProfileBannerStyle, getUserTierBadgeIcon, getUserNameColorClass, isUserVIP, getThemePackAssetUrl, PLATINUM_DEFAULTS } from '../lib/premiumUtils';
@@ -180,6 +180,14 @@ export default function UserDashboard({
   const [selectedDiamondPackage, setSelectedDiamondPackage] = useState<{ name: string; diamonds: number; price: number; description: string } | null>(null);
   const [diamondTxId, setDiamondTxId] = useState('');
   const [diamondScreenshotUrl, setDiamondScreenshotUrl] = useState('');
+  const [debugStatus, setDebugStatus] = useState('');
+
+  // Tournament Dashboard Extra States
+  const [dashboardMatches, setDashboardMatches] = useState<DbTournamentMatch[]>([]);
+  const [dashboardResults, setDashboardResults] = useState<any[]>([]);
+  const [allTeamsList, setAllTeamsList] = useState<Team[]>([]);
+  const [isLoadingDashboardMatches, setIsLoadingDashboardMatches] = useState(false);
+  const [tourneySubTab, setTourneySubTab] = useState<'slots' | 'matches' | 'results' | 'history'>('slots');
 
   // Additional emergency patch state variables
   const [userWithdrawals, setUserWithdrawals] = useState<any[]>([]);
@@ -194,12 +202,95 @@ export default function UserDashboard({
   const [withdrawQrUrl, setWithdrawQrUrl] = useState('');
   const [isSubmittingWithdraw, setIsSubmittingWithdraw] = useState(false);
 
+  const getParticipantGlobalName = (id: string | null | undefined, type: 'solo' | 'team') => {
+    if (!id) return "BYE";
+    if (type === 'solo') {
+      const user = users?.find(u => u.id === id);
+      return user ? (user.gamerName || user.username || user.email || 'Gamer') : 'BYE';
+    } else {
+      const team = allTeamsList.find(ti => ti.id === id) || userTeams.find(ti => ti.id === id);
+      return team ? team.name : 'BYE';
+    }
+  };
+
+  const fetchDashboardMatchesAndResults = async () => {
+    if (!currentUser?.id) return;
+    setIsLoadingDashboardMatches(true);
+    try {
+      let matchesList: DbTournamentMatch[] = [];
+      let resultsList: any[] = [];
+      let teamsList: Team[] = [];
+      
+      teamsList = await supabaseService.getTeams();
+      
+      if (isSupabaseConfigured && supabase) {
+        const { data: matchesData } = await supabase.from('tournament_matches').select('*');
+        matchesList = matchesData || [];
+        
+        const { data: resultsData } = await supabase.from('tournament_results').select('*');
+        resultsList = resultsData || [];
+      } else {
+        const myTeamIds = userTeams.map(ut => ut.id);
+        const myRegs = registrations?.filter(r => r.user_id === currentUser?.id || (r.team_id && myTeamIds.includes(r.team_id))) || [];
+        const uniqueTourneyIds = Array.from(new Set(myRegs.map(r => r.tournament_id)));
+        
+        for (const tId of uniqueTourneyIds) {
+          try {
+            const tMatches = await supabaseService.getTournamentMatches(tId);
+            matchesList.push(...tMatches);
+            const tResults = await supabaseService.getTournamentResults(tId);
+            resultsList.push(...tResults);
+          } catch (innerErr) {
+            console.error(`Error loading details for tournament ${tId}:`, innerErr);
+          }
+        }
+      }
+      
+      setDashboardMatches(matchesList);
+      setDashboardResults(resultsList);
+      setAllTeamsList(teamsList);
+    } catch (err) {
+      console.error("Failed to load dashboard matches/results:", err);
+    } finally {
+      setIsLoadingDashboardMatches(false);
+    }
+  };
+
   const fetchUserDiamondTransactions = async () => {
     try {
       if (!currentUser?.id) return;
-      const allTx = await supabaseService.getDiamondTransactions();
-      const filtered = allTx.filter((t: any) => t.user_id === currentUser.id);
-      setUserDiamondTransactions(filtered);
+      if (isSupabaseConfigured && supabase) {
+        const { data, error } = await supabase
+          .from('diamond_transactions')
+          .select('*')
+          .eq('user_id', currentUser.id)
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        
+        // Match the mapping shape returned by supabaseService
+        const mapped = (data || []).map((d: any) => ({
+          id: d.id,
+          user_id: d.user_id,
+          wallet_type: d.wallet_type || 'topup',
+          transaction_type: d.transaction_type || 'topup_purchase',
+          diamonds: Number(d.diamonds || 0),
+          bonus: Number(d.bonus || 0),
+          total_amount: Number(d.total_credited !== undefined ? d.total_credited : (d.total_amount !== undefined ? d.total_amount : d.diamonds)),
+          total_credited: Number(d.total_credited !== undefined ? d.total_credited : d.diamonds),
+          price_paid: Number(d.price_paid || 0),
+          status: d.status,
+          transaction_id: d.transaction_id,
+          payment_screenshot_url: d.payment_screenshot_url,
+          note: d.note || null,
+          approved_at: d.approved_at,
+          created_at: d.created_at
+        }));
+        setUserDiamondTransactions(mapped);
+      } else {
+        const allTx = await supabaseService.getDiamondTransactions();
+        const filtered = allTx.filter((t: any) => t.user_id === currentUser.id);
+        setUserDiamondTransactions(filtered);
+      }
     } catch (err) {
       console.error("Failed to load user diamond transactions in dashboard:", err);
     }
@@ -221,90 +312,145 @@ export default function UserDashboard({
       fetchUserDiamondTransactions();
       fetchUserWithdrawals();
     }
+    if (activeTab === 'tournaments' && currentUser?.id) {
+      fetchDashboardMatchesAndResults();
+    }
   }, [activeTab, currentUser?.id]);
 
-  const handlePurchaseDiamonds = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedDiamondPackage || !currentUser) return;
-    if (!diamondTxId.trim()) {
-      addToast("Please provide validation transfer reference ID!", "warning");
-      return;
-    }
-
+  const submitDiamondTopup = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setDebugStatus('');
     try {
-      const DIAMOND_RATE_INR = 1;
-      const baseDiamonds = selectedDiamondPackage.diamonds;
-      const bonusDiamonds = baseDiamonds >= 100 ? Math.floor(baseDiamonds * 0.05) : 0;
-      const totalAmount = baseDiamonds + bonusDiamonds;
-      const pricePaid = selectedDiamondPackage.price * DIAMOND_RATE_INR;
+      // 1. Get current auth user using supabase.auth.getUser()
+      let user: any = null;
+      if (isSupabaseConfigured && supabase) {
+        const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+        if (authError) {
+          console.error("Auth error:", authError);
+          user = currentUser;
+        } else {
+          user = authUser;
+        }
+      } else {
+        user = currentUser;
+      }
 
-      await supabaseService.createDiamondTransaction({
-        user_id: currentUser.id,
-        wallet_type: 'topup',
-        transaction_type: 'topup_purchase',
-        diamonds: baseDiamonds,
-        bonus: bonusDiamonds,
-        total_amount: totalAmount,
-        price_paid: pricePaid,
-        status: 'pending',
-        transaction_id: diamondTxId,
-        payment_screenshot_url: diamondScreenshotUrl || null,
-        note: `Purchased package: ${selectedDiamondPackage.name}`
-      });
-      addToast(`Order for ${totalAmount} Diamonds submitted to review. Core dispatch will credit your vault shortly.`, "success");
-      setDiamondTxId('');
-      setDiamondScreenshotUrl('');
-      setSelectedDiamondPackage(null);
-      fetchUserDiamondTransactions();
-    } catch (err: any) {
-      console.error(err);
-      addToast("Failed to file diamond request.", "error");
-    }
-  };
+      // 2. Validate user exists
+      if (!user || !user.id) {
+        addToast("Diamond request failed: User is not authenticated.", "error");
+        setDebugStatus("User validation failed: Not authenticated.");
+        return;
+      }
 
-  const handlePurchaseCustomDiamonds = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentUser) return;
-    if (topupAmount <= 0) {
-      addToast("Please choose a valid number of diamonds.", "warning");
-      return;
-    }
-    if (!diamondTxId.trim()) {
-      addToast("Please provide validation transfer reference ID (UTR)!", "warning");
-      return;
-    }
+      // Determine diamonds counts
+      let diamonds = 0;
+      if (isCustomTopupOpen) {
+        diamonds = topupAmount;
+      } else if (selectedDiamondPackage) {
+        diamonds = selectedDiamondPackage.diamonds;
+      }
 
-    try {
-      const DIAMOND_RATE_INR = 1;
-      const isBonusEligible = topupAmount >= 100;
-      const bonusDiamonds = isBonusEligible ? Math.floor(topupAmount * 0.05) : 0;
-      const totalAmount = topupAmount + bonusDiamonds;
-      const pricePaid = topupAmount * DIAMOND_RATE_INR; // Corrected ₹1 rate
+      // 3. Validate diamonds > 0
+      if (diamonds <= 0) {
+        addToast("Diamond request failed: Please choose a valid package or custom top-up amount.", "warning");
+        setDebugStatus("Validation failed: diamonds count <= 0.");
+        return;
+      }
 
-      await supabaseService.createDiamondTransaction({
-        user_id: currentUser.id,
-        wallet_type: 'topup',
-        transaction_type: 'topup_purchase',
-        diamonds: topupAmount,
-        bonus: bonusDiamonds,
-        total_amount: totalAmount,
-        price_paid: pricePaid,
-        status: 'pending',
-        transaction_id: diamondTxId,
-        payment_screenshot_url: diamondScreenshotUrl || null,
-        note: `Custom Top-up request for ${topupAmount} Diamonds${bonusDiamonds ? ' (+5% Bonus)' : ''}`
-      });
+      // 4. Validate transaction_id/UTR exists
+      const transactionId = diamondTxId ? diamondTxId.trim() : "";
+      if (!transactionId) {
+        addToast("Diamond request failed: UTR transaction reference ID is required.", "warning");
+        setDebugStatus("Validation failed: transaction ID reference missing.");
+        return;
+      }
 
-      addToast(`Custom top-up order for ${totalAmount} Diamonds submitted to review. Core dispatch will credit your vault shortly.`, "success");
+      // 5. Validate payment screenshot URL exists if upload is required
+      // Since screenshots are optional in the database and forms, keep as is unless upload is required.
+      const paymentScreenshotUrl = diamondScreenshotUrl ? diamondScreenshotUrl.trim() : null;
+
+      // 6. Calculate
+      const price_paid = diamonds;
+      const bonus = diamonds >= 100 ? Math.floor(diamonds * 0.05) : 0;
+      const total_credited = diamonds + bonus;
+
+      console.log("Diamond insert attempted");
+      setDebugStatus("Diamond insert attempted");
+
+      // Clear any fake local storage records as requested
+      if (isSupabaseConfigured) {
+        localStorage.removeItem('gh_diamond_transactions');
+      }
+
+      // 7. Insert to Supabase table
+      if (isSupabaseConfigured && supabase) {
+        const { error } = await supabase
+          .from("diamond_transactions")
+          .insert({
+            user_id: user.id,
+            wallet_type: "topup",
+            transaction_type: "topup_purchase",
+            diamonds: diamonds,
+            bonus: bonus,
+            total_credited: total_credited,
+            price_paid: price_paid,
+            transaction_id: transactionId,
+            payment_screenshot_url: paymentScreenshotUrl,
+            status: "pending",
+            note: "Diamond top-up request"
+          });
+
+        if (error) {
+          console.error("Diamond insert failed", error);
+          addToast("Diamond request failed: " + error.message, "error");
+          setDebugStatus(`Diamond insert failed: ${error.message}`);
+          return;
+        }
+      } else {
+        // Fallback for offline mode if Supabase is unconfigured, but we still update local
+        await supabaseService.createDiamondTransaction({
+          user_id: user.id,
+          wallet_type: "topup",
+          transaction_type: "topup_purchase",
+          diamonds: diamonds,
+          bonus: bonus,
+          total_credited: total_credited,
+          total_amount: total_credited,
+          price_paid: price_paid,
+          status: "pending",
+          transaction_id: transactionId,
+          payment_screenshot_url: paymentScreenshotUrl,
+          note: "Diamond top-up request"
+        });
+      }
+
+      // 8. Success actions
+      addToast("Diamond request submitted successfully.", "success");
+      setDebugStatus("Diamond insert attempted: Diamond request submitted successfully.");
+
+      // Clear form states
       setDiamondTxId('');
       setDiamondScreenshotUrl('');
       setIsCustomTopupOpen(false);
       setSelectedDiamondPackage(null);
+
+      // Refetch history logs
       fetchUserDiamondTransactions();
     } catch (err: any) {
-      console.error(err);
-      addToast("Failed to file custom top-up request.", "error");
+      console.error("Diamond insert failed", err);
+      addToast("Diamond request failed: " + (err.message || err), "error");
+      setDebugStatus(`Diamond insert failed: ${err.message || err}`);
     }
+  };
+
+  const handlePurchaseDiamonds = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitDiamondTopup(e);
+  };
+
+  const handlePurchaseCustomDiamonds = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitDiamondTopup(e);
   };
 
   const handleWithdrawalSubmit = async (e: React.FormEvent) => {
@@ -313,13 +459,15 @@ export default function UserDashboard({
     
     // Check balances
     const winningBalance = currentUser.winning_diamonds || 0;
+    const lockedBalance = currentUser.locked_withdraw_diamonds || 0;
+    const availableBalance = winningBalance - lockedBalance;
     
     if (withdrawAmount < 100) {
       addToast("Minimum withdrawal is 100 winning diamonds.", "error");
       return;
     }
-    if (withdrawAmount > winningBalance) {
-      addToast("Insufficient winning balance.", "error");
+    if (withdrawAmount > availableBalance) {
+      addToast(`Insufficient available winning balance. Requested: ${withdrawAmount}, Available: ${availableBalance}`, "error");
       return;
     }
     if (!withdrawUpiId.trim()) {
@@ -360,14 +508,56 @@ export default function UserDashboard({
       
       if (onUpdateProfile) {
         onUpdateProfile({
-          winning_diamonds: Math.max(0, (currentUser?.winning_diamonds || 0) - withdrawAmount)
+          locked_withdraw_diamonds: (currentUser?.locked_withdraw_diamonds || 0) + withdrawAmount
         });
       }
     } catch (err: any) {
       console.error(err);
-      addToast("Failed to submit withdrawal request.", "error");
+      addToast(err.message || "Failed to submit withdrawal request.", "error");
     } finally {
       setIsSubmittingWithdraw(false);
+    }
+  };
+
+  const [isTransferOpen, setIsTransferOpen] = useState(false);
+  const [transferAmount, setTransferAmount] = useState('1500');
+  const [isSubmittingTransfer, setIsSubmittingTransfer] = useState(false);
+  const [zoomedQrUrl, setZoomedQrUrl] = useState<string | null>(null);
+
+  const handleTransferTopupToWinning = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amountVal = parseInt(transferAmount) || 0;
+    if (amountVal < 1500) {
+      addToast("Minimum transfer is 1500 Diamonds.", "warning");
+      return;
+    }
+    const currentTopup = currentUser.topup_diamonds || 0;
+    if (currentTopup < amountVal) {
+      addToast(`Insufficient Top-up balance. You only have ${currentTopup} Diamonds.`, "error");
+      return;
+    }
+
+    setIsSubmittingTransfer(true);
+    try {
+      await supabaseService.transferTopupToWinning(currentUser.id, amountVal);
+      addToast(`Transfer of ${amountVal} Top-up Diamonds to Winning Vault was successful!`, "success");
+      
+      // Update local profile state
+      if (onUpdateProfile) {
+        onUpdateProfile({
+          topup_diamonds: currentTopup - amountVal,
+          winning_diamonds: (currentUser.winning_diamonds || 0) + amountVal
+        });
+      }
+      
+      setIsTransferOpen(false);
+      setTransferAmount('1500');
+      fetchUserDiamondTransactions();
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to complete transfer.", "error");
+    } finally {
+      setIsSubmittingTransfer(false);
     }
   };
 
@@ -2036,94 +2226,438 @@ export default function UserDashboard({
           )}
 
           {activeTab === 'tournaments' && (
-            <div className="space-y-4">
-              <div className="flex justify-between items-center">
+            <div className="space-y-5">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
-                  <h3 className="text-base font-black font-mono text-white uppercase tracking-wider">My Tournament Registrations</h3>
-                  <p className="text-xs text-zinc-400 font-mono">Track verification reviews and entry fee logs for competitive slots.</p>
+                  <h3 className="text-base font-black font-mono text-white uppercase tracking-wider flex items-center gap-2">
+                    <Trophy className="w-5 h-5 text-amber-500 shrink-0" />
+                    Tournament Control Room
+                  </h3>
+                  <p className="text-xs text-zinc-400 font-mono">Monitor your active matchups, slots, scores, and battle history logs.</p>
                 </div>
               </div>
 
-              {(() => {
-                const myTeamIds = userTeams.map(ut => ut.id);
-                const myRegistrations = registrations.filter(r => r.user_id === currentUser.id || (r.team_id && myTeamIds.includes(r.team_id)));
+              {/* Tournament Section Sub tabs */}
+              <div className="flex flex-wrap gap-2 border-b border-zinc-800/80 pb-3 font-mono text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setTourneySubTab('slots')}
+                  className={`px-3 py-2 rounded-lg border uppercase tracking-wider transition-all cursor-pointer font-bold ${
+                    tourneySubTab === 'slots' 
+                      ? 'bg-rose-500/10 border-rose-500/35 text-rose-400 font-black' 
+                      : 'bg-zinc-950 border-zinc-900 text-zinc-500 hover:text-white'
+                  }`}
+                >
+                  Slots Registered
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTourneySubTab('matches')}
+                  className={`px-3 py-2 rounded-lg border uppercase tracking-wider transition-all cursor-pointer font-bold flex items-center gap-1 ${
+                    tourneySubTab === 'matches' 
+                      ? 'bg-rose-500/10 border-rose-500/35 text-rose-400 font-black' 
+                      : 'bg-zinc-950 border-zinc-900 text-zinc-500 hover:text-white'
+                  }`}
+                >
+                  ⚔ My Active Matches
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTourneySubTab('results')}
+                  className={`px-3 py-2 rounded-lg border uppercase tracking-wider transition-all cursor-pointer font-bold flex items-center gap-1 ${
+                    tourneySubTab === 'results' 
+                      ? 'bg-rose-500/10 border-rose-500/35 text-rose-400 font-black' 
+                      : 'bg-zinc-900 border-zinc-900 text-zinc-500 hover:text-white'
+                  }`}
+                >
+                  📊 Completed Results
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTourneySubTab('history')}
+                  className={`px-3 py-2 rounded-lg border uppercase tracking-wider transition-all cursor-pointer font-bold flex items-center gap-1 ${
+                    tourneySubTab === 'history' 
+                      ? 'bg-rose-500/10 border-rose-500/35 text-rose-400 font-black' 
+                      : 'bg-zinc-950 border-zinc-900 text-zinc-500 hover:text-white'
+                  }`}
+                >
+                  📜 Tournament History
+                </button>
+              </div>
 
-                if (myRegistrations.length === 0) {
-                  return (
-                    <div className="p-8 text-center bg-zinc-950/40 rounded-2xl border border-zinc-850">
-                      <Trophy className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-                      <p className="text-xs font-mono text-zinc-500">No tournament registrations found.</p>
-                      <p className="text-[10px] text-zinc-650 font-mono mt-1">Visit the "Arena Tournaments" page to purchase entry or enroll!</p>
-                    </div>
-                  );
-                }
+              {tourneySubTab === 'slots' && (
+                <div className="space-y-4">
+                  {(() => {
+                    const myTeamIds = userTeams.map(ut => ut.id);
+                    const myRegistrations = registrations.filter(r => r.user_id === currentUser?.id || (r.team_id && myTeamIds.includes(r.team_id)));
 
-                return (
-                  <div className="grid grid-cols-1 gap-3.5">
-                    {myRegistrations.map(reg => {
-                      const t = tournaments?.find(tour => tour.id === reg.tournament_id);
-                      if (!t) return null;
-
-                      const statusColors: Record<string, string> = {
-                        pending: 'text-amber-400 bg-amber-400/5 border-amber-500/20',
-                        approved: 'text-emerald-400 bg-emerald-400/5 border-emerald-500/20',
-                        rejected: 'text-rose-450 bg-rose-500/5 border-rose-505/15'
-                      };
-
-                      const paymentColors: Record<string, string> = {
-                        pending: 'text-yellow-500 border-yellow-500/20 bg-yellow-500/5',
-                        paid: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5',
-                        unneeded: 'text-zinc-500 border-zinc-800 bg-zinc-900/40',
-                        rejected: 'text-red-400 border-red-500/10 bg-red-500/5'
-                      };
-
+                    if (myRegistrations.length === 0) {
                       return (
-                        <div key={reg.id} className="p-4 bg-zinc-950/80 border border-zinc-855 hover:border-zinc-750 transition-all duration-300 rounded-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-lg">
-                          <div className="space-y-1">
-                            <span className="text-[9px] font-mono font-bold tracking-wider text-emerald-400 bg-emerald-950/40 border border-emerald-900/30 px-2 py-0.5 rounded-md uppercase">
-                              {t.game}
-                            </span>
-                            <h4 className="text-sm font-extrabold text-white tracking-tight mt-1">{t.title}</h4>
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-500 font-mono pt-1">
-                              <span>FORMAT: <span className="text-zinc-300">{reg.registration_type.toUpperCase()}</span></span>
-                              {reg.team_id && (
-                                <span>
-                                  TEAM ID: <span className="text-zinc-305">{reg.team_id.substring(0, 8)}</span>
-                                </span>
-                              )}
-                              <span className="text-zinc-700">•</span>
-                              <span>FILED: {new Date(reg.registered_at).toLocaleDateString()}</span>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-4 self-stretch md:self-auto justify-between md:justify-end border-t border-zinc-900 md:border-0 pt-3 md:pt-0">
-                            {/* Payment Status */}
-                            {t.entry_fee && t.entry_fee.toLowerCase() !== 'free' && t.entry_fee !== '0' && (
-                              <div className="flex flex-col items-end">
-                                <span className="text-[8px] font-mono text-zinc-500 uppercase mb-0.5">PAYMENT</span>
-                                <span className={`text-[9px] uppercase font-mono px-2.5 py-1 rounded-md border font-extrabold flex items-center gap-1 leading-none ${paymentColors[reg.payment_status] || 'text-zinc-500'}`}>
-                                  {reg.payment_status}
-                                </span>
-                                {reg.transaction_id && (
-                                  <span className="text-[8px] font-mono text-zinc-500 mt-1 block">TxID: {reg.transaction_id}</span>
-                                )}
-                              </div>
-                            )}
-
-                            {/* Registration Status */}
-                            <div className="flex flex-col items-end">
-                              <span className="text-[8px] font-mono text-zinc-500 uppercase mb-0.5">SLOT STATUS</span>
-                              <span className={`text-[9.5px] uppercase font-mono px-3 py-1 rounded-md border font-black tracking-wider leading-none ${statusColors[reg.status] || 'text-zinc-500'}`}>
-                                {reg.status.toUpperCase()}
-                              </span>
-                            </div>
-                          </div>
+                        <div className="p-8 text-center bg-zinc-950/40 rounded-2xl border border-zinc-850">
+                          <Trophy className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                          <p className="text-xs font-mono text-zinc-500">No active tournament slots found.</p>
+                          <p className="text-[10px] text-zinc-650 font-mono mt-1">Visit the "Arena Tournaments" page to purchase entry or enroll!</p>
                         </div>
                       );
-                    })}
+                    }
+
+                    return (
+                      <div className="grid grid-cols-1 gap-3.5">
+                        {myRegistrations.map(reg => {
+                          const t = tournaments?.find(tour => tour.id === reg.tournament_id);
+                          if (!t) return null;
+
+                          const statusColors: Record<string, string> = {
+                            pending: 'text-amber-400 bg-amber-400/5 border-amber-500/20',
+                            approved: 'text-emerald-400 bg-emerald-400/5 border-emerald-500/20',
+                            rejected: 'text-rose-450 bg-rose-500/5 border-rose-505/15'
+                          };
+
+                          const paymentColors: Record<string, string> = {
+                            pending: 'text-yellow-500 border-yellow-500/20 bg-yellow-500/5',
+                            paid: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5',
+                            unneeded: 'text-zinc-500 border-zinc-800 bg-zinc-900/40',
+                            rejected: 'text-red-400 border-red-500/10 bg-red-500/5'
+                          };
+
+                          return (
+                            <div key={reg.id} className="p-4 bg-zinc-950/80 border border-zinc-855 hover:border-zinc-750 transition-all duration-300 rounded-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-lg">
+                              <div className="space-y-1">
+                                <span className="text-[9px] font-mono font-bold tracking-wider text-emerald-400 bg-emerald-950/40 border border-emerald-900/30 px-2 py-0.5 rounded-md uppercase">
+                                  {t.game}
+                                </span>
+                                <h4 className="text-sm font-extrabold text-white tracking-tight mt-1">{t.title}</h4>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-500 font-mono pt-1">
+                                  <span>FORMAT: <span className="text-zinc-300">{reg.registration_type.toUpperCase()}</span></span>
+                                  {reg.team_id && (
+                                    <span>
+                                      TEAM ID: <span className="text-zinc-305">{reg.team_id.substring(0, 8)}</span>
+                                    </span>
+                                  )}
+                                  <span className="text-zinc-700">•</span>
+                                  <span>FILED: {new Date(reg.registered_at).toLocaleDateString()}</span>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-4 self-stretch md:self-auto justify-between md:justify-end border-t border-zinc-900 md:border-0 pt-3 md:pt-0">
+                                {/* Payment Status */}
+                                {t.entry_fee && t.entry_fee.toLowerCase() !== 'free' && t.entry_fee !== '0' && (
+                                  <div className="flex flex-col items-end">
+                                    <span className="text-[8px] font-mono text-zinc-500 uppercase mb-0.5">PAYMENT</span>
+                                    <span className={`text-[9px] uppercase font-mono px-2.5 py-1 rounded-md border font-extrabold flex items-center gap-1 leading-none ${paymentColors[reg.payment_status] || 'text-zinc-500'}`}>
+                                      {reg.payment_status}
+                                    </span>
+                                    {reg.transaction_id && (
+                                      <span className="text-[8px] font-mono text-zinc-505 mt-1 block">TxID: {reg.transaction_id}</span>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Registration Status */}
+                                <div className="flex flex-col items-end">
+                                  <span className="text-[8px] font-mono text-zinc-500 uppercase mb-0.5">SLOT STATUS</span>
+                                  <span className={`text-[9.5px] uppercase font-mono px-3 py-1 rounded-md border font-black tracking-wider leading-none ${statusColors[reg.status] || 'text-zinc-500'}`}>
+                                    {reg.status.toUpperCase()}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {tourneySubTab === 'matches' && (
+                <div className="space-y-4">
+                  {isLoadingDashboardMatches ? (
+                    <p className="text-xs text-zinc-500 font-mono italic animate-pulse">Loading active arena list...</p>
+                  ) : (() => {
+                    const myTeamIds = userTeams.map(ut => ut.id);
+                    const activeMatchups = dashboardMatches.filter(m => {
+                      const isMySolo = m.player1UserId === currentUser?.id || m.player2UserId === currentUser?.id;
+                      const isMyTeam = (m.team1Id && myTeamIds.includes(m.team1Id)) || (m.team2Id && myTeamIds.includes(m.team2Id));
+                      return (isMySolo || isMyTeam) && (m.status === 'live' || m.status === 'pending');
+                    });
+
+                    if (activeMatchups.length === 0) {
+                      return (
+                        <div className="p-8 text-center bg-zinc-950/40 rounded-2xl border border-zinc-850">
+                          <Gamepad2 className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                          <p className="text-xs font-mono text-zinc-500">No active or upcoming matches scheduled.</p>
+                          <p className="text-[10px] text-zinc-650 font-mono mt-1">When brackets lock and matches begin, your opponent matchups will list here!</p>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {activeMatchups.map(m => {
+                          const tourney = tournaments?.find(t => t.id === m.tournament_id);
+                          const isSolo = tourney?.registrationType === 'solo';
+
+                          const p1Id = isSolo ? m.player1UserId : m.team1Id;
+                          const p2Id = isSolo ? m.player2UserId : m.team2Id;
+
+                          const p1Name = getParticipantGlobalName(p1Id, tourney?.registrationType || 'solo');
+                          const p2Name = getParticipantGlobalName(p2Id, tourney?.registrationType || 'solo');
+
+                          return (
+                            <div key={m.id} className="p-4 bg-zinc-950 border border-zinc-850/60 rounded-2xl space-y-3.5 relative overflow-hidden shadow-md">
+                              <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/5 rounded-full blur-2xl pointer-events-none" />
+                              <div className="flex justify-between items-center text-[9px] font-mono leading-none">
+                                <span className="text-zinc-500 font-bold uppercase tracking-wider">{tourney?.title || "CODM Tournament"}</span>
+                                <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
+                                  m.status === 'live' ? 'bg-rose-500/10 border border-rose-500/30 text-rose-450 animate-pulse' : 'bg-zinc-900 border border-zinc-800 text-zinc-400'
+                                }`}>
+                                  {m.status}
+                                </span>
+                              </div>
+
+                              <p className="text-xs font-mono font-bold text-zinc-400">Match #{m.matchNumber} - Round {m.roundNumber}</p>
+
+                              <div className="flex items-center justify-between gap-2.5 py-1">
+                                <span className={`flex-1 text-center py-2 px-3 rounded-lg border text-xs font-bold leading-tight truncate ${
+                                  p1Id === currentUser?.id ? 'bg-rose-500/5 border-rose-500/25 text-rose-455 font-extrabold' : 'bg-zinc-900 border-zinc-850 text-zinc-300'
+                                }`}>
+                                  {p1Name}
+                                </span>
+                                <span className="text-[10px] font-mono font-black text-zinc-550">VS</span>
+                                <span className={`flex-1 text-center py-2 px-3 rounded-lg border text-xs font-bold leading-tight truncate ${
+                                  p2Id === currentUser?.id ? 'bg-rose-500/5 border-rose-500/25 text-rose-455 font-extrabold' : 'bg-zinc-900 border-zinc-850 text-zinc-300'
+                                }`}>
+                                  {p2Name}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {tourneySubTab === 'results' && (
+                <div className="space-y-4">
+                  {isLoadingDashboardMatches ? (
+                    <p className="text-xs text-zinc-500 font-mono italic animate-pulse">Loading completed results list...</p>
+                  ) : (() => {
+                    const myTeamIds = userTeams.map(ut => ut.id);
+                    const completedMatchups = dashboardMatches.filter(m => {
+                      const isMySolo = m.player1UserId === currentUser?.id || m.player2UserId === currentUser?.id;
+                      const isMyTeam = (m.team1Id && myTeamIds.includes(m.team1Id)) || (m.team2Id && myTeamIds.includes(m.team2Id));
+                      return (isMySolo || isMyTeam) && (m.status === 'completed' || m.status === 'disputed');
+                    });
+
+                    if (completedMatchups.length === 0) {
+                      return (
+                        <div className="p-8 text-center bg-zinc-950/40 rounded-2xl border border-zinc-850">
+                          <Eye className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                          <p className="text-xs font-mono text-zinc-500">No completed match results found.</p>
+                          <p className="text-[10px] text-zinc-650 font-mono mt-1">Your past tournament results, verified scores, and screenshots will list here!</p>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {completedMatchups.map(m => {
+                          const tourney = tournaments?.find(t => t.id === m.tournament_id);
+                          const isSolo = tourney?.registrationType === 'solo';
+
+                          const p1Id = isSolo ? m.player1UserId : m.team1Id;
+                          const p2Id = isSolo ? m.player2UserId : m.team2Id;
+
+                          const p1Name = getParticipantGlobalName(p1Id, tourney?.registrationType || 'solo');
+                          const p2Name = getParticipantGlobalName(p2Id, tourney?.registrationType || 'solo');
+
+                          const winnerId = isSolo ? m.winnerUserId : m.winnerTeamId;
+                          const winnerName = getParticipantGlobalName(winnerId, tourney?.registrationType || 'solo');
+
+                          const result = dashboardResults.find(r => r.match_id === m.id);
+
+                          return (
+                            <div key={m.id} className="p-4 bg-zinc-950 border border-zinc-855 rounded-2xl space-y-3 shadow-md relative overflow-hidden">
+                              <div className="flex justify-between items-center text-[9px] font-mono leading-none">
+                                <span className="text-zinc-500 font-bold uppercase tracking-wider">{tourney?.title}</span>
+                                <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
+                                  m.status === 'completed' ? 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-400' : 'bg-amber-500/10 border border-amber-500/25 text-amber-500'
+                                }`}>
+                                  {m.status}
+                                </span>
+                              </div>
+
+                              <p className="text-xs font-mono font-bold text-zinc-400">Match #{m.matchNumber} - Round {m.roundNumber}</p>
+
+                              <div className="flex items-center justify-between gap-2.5 py-1">
+                                <span className={`flex-1 text-center py-1 px-2.5 rounded-lg border text-xs leading-tight truncate ${
+                                  winnerId && winnerId === p1Id ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 font-bold' : 'bg-zinc-900 border-zinc-850 text-zinc-300'
+                                }`}>
+                                  {p1Name}
+                                </span>
+                                <span className="text-[10px] font-mono font-black text-zinc-550">VS</span>
+                                <span className={`flex-1 text-center py-1 px-2.5 rounded-lg border text-xs leading-tight truncate ${
+                                  winnerId && winnerId === p2Id ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 font-bold' : 'bg-zinc-900 border-zinc-850 text-zinc-300'
+                                }`}>
+                                  {p2Name}
+                                </span>
+                              </div>
+
+                              <div className="border-t border-zinc-900 pt-2.5 space-y-1.5 text-[10px] font-mono text-zinc-400">
+                                <div className="flex justify-between items-center font-bold text-[10.5px]">
+                                  <span>🏆 WINNER:</span>
+                                  <span className="text-emerald-400 font-extrabold">{winnerName}</span>
+                                </div>
+                                {result?.score && (
+                                  <div className="flex justify-between items-center">
+                                    <span>SCORE:</span>
+                                    <span className="text-amber-400 font-bold">{result.score}</span>
+                                  </div>
+                                )}
+                                {result?.result_screenshot_url && (
+                                  <div className="pt-1.5 space-y-1">
+                                    <span className="text-[8px] text-zinc-500 block uppercase">Screenshot Proof:</span>
+                                    <a 
+                                      href={result.result_screenshot_url} 
+                                      target="_blank" 
+                                      rel="noopener noreferrer" 
+                                      referrerPolicy="no-referrer"
+                                      className="block w-full overflow-hidden rounded-lg border border-zinc-900 hover:border-amber-500/40"
+                                    >
+                                      <img 
+                                        src={result.result_screenshot_url} 
+                                        alt="Proof" 
+                                        referrerPolicy="no-referrer"
+                                        className="w-full h-16 object-cover" 
+                                      />
+                                    </a>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {tourneySubTab === 'history' && (
+                <div className="space-y-6">
+                  {/* Part 1: Official Placements & Achievements */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-1.5 pb-1 border-b border-zinc-900">
+                      <span className="text-sm">🏆</span>
+                      <h4 className="text-xs font-black font-mono text-amber-500 uppercase tracking-wider">Hall of Champions & Placement Log</h4>
+                    </div>
+                    {currentUser.tournamentHistory && currentUser.tournamentHistory.length > 0 ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                        {currentUser.tournamentHistory.map((hist: any) => {
+                          const isChamp = hist.rank?.toLowerCase().includes("champion") || hist.rank?.includes("🏆");
+                          return (
+                            <div 
+                              key={hist.id} 
+                              className={`p-4 rounded-2xl relative overflow-hidden flex flex-col justify-between h-28 border ${
+                                isChamp 
+                                  ? 'bg-amber-500/10 border-amber-500/30 shadow-[0_0_15px_rgba(245,158,11,0.05)] shadow-amber-500/10' 
+                                  : 'bg-zinc-950 border-zinc-900'
+                              }`}
+                            >
+                              {isChamp && (
+                                <div className="absolute top-2 right-2 bg-amber-500 text-black text-[7.5px] font-black font-mono uppercase px-2 py-0.5 rounded-full flex items-center gap-1 shadow-lg">
+                                  <span>🏆 Champion Badge</span>
+                                </div>
+                              )}
+                              
+                              <div className="space-y-1 pr-14">
+                                <span className="text-[8px] font-mono text-zinc-500 uppercase block">{hist.date}</span>
+                                <h5 className="text-xs font-bold text-white uppercase truncate" title={hist.tournamentName}>
+                                  {hist.tournamentName}
+                                </h5>
+                              </div>
+
+                              <div className="flex justify-between items-end pt-2 border-t border-zinc-900">
+                                <div>
+                                  <span className="text-[8px] font-mono text-zinc-550 block uppercase">PLACEMENT</span>
+                                  <span className={`text-xs font-black font-display uppercase ${isChamp ? 'text-amber-400' : 'text-zinc-300'}`}>
+                                    {hist.rank || "Participant"}
+                                  </span>
+                                </div>
+                                <div className="text-right">
+                                  <span className="text-[8px] font-mono text-zinc-550 block uppercase">PRIZE WON</span>
+                                  <span className="text-xs font-black font-mono text-cyan-400">
+                                    💎 {hist.prizeWon || 0}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="p-6 text-center bg-zinc-950/30 rounded-2xl border border-zinc-900 border-dashed">
+                        <p className="text-[10px] text-zinc-500 font-mono italic">No official champion titles or placements logged yet.</p>
+                      </div>
+                    )}
                   </div>
-                );
-              })()}
+
+                  {/* Part 2: Participation log */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-1.5 pb-1 border-b border-zinc-900">
+                      <span className="text-sm">⚔</span>
+                      <h4 className="text-xs font-black font-mono text-zinc-400 uppercase tracking-wider">Historical Enrolled Arenas</h4>
+                    </div>
+                    {(() => {
+                      // Match tournaments from user registrations
+                      const myTeamIds = userTeams.map(ut => ut.id);
+                      const myRegIds = registrations
+                        .filter(r => r.user_id === currentUser?.id || (r.team_id && myTeamIds.includes(r.team_id)))
+                        .map(r => r.tournament_id);
+                      
+                      const uniqueTourneyIds = Array.from(new Set(myRegIds));
+                      const enrolledTourneys = tournaments?.filter(t => uniqueTourneyIds.includes(t.id)) || [];
+
+                      if (enrolledTourneys.length === 0) {
+                        return (
+                          <div className="p-8 text-center bg-zinc-950/40 rounded-2xl border border-zinc-850">
+                            <Trophy className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                            <p className="text-xs font-mono text-zinc-500">No past tournament participation records found.</p>
+                            <p className="text-[10px] text-zinc-650 font-mono mt-1">Enroll in upcoming events to begin your competitive legacy!</p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="grid grid-cols-1 gap-3">
+                          {enrolledTourneys.map(t => (
+                            <div key={t.id} className="p-4 bg-zinc-950 border border-zinc-900 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                              <div>
+                                <span className="text-[9px] font-mono text-cyan-400 bg-cyan-950/50 border border-cyan-900/30 px-2 py-0.5 rounded uppercase">
+                                  {t.game}
+                                </span>
+                                <h4 className="text-sm font-black text-white mt-1 uppercase">{t.title}</h4>
+                                <p className="text-[10px] text-zinc-500 font-mono mt-0.5">Tournament Prize: <strong className="text-amber-400">{t.prize_pool || "₹10,000"}</strong></p>
+                              </div>
+                              <div className="flex flex-col items-end shrink-0 text-right">
+                                <span className="text-[9px] font-mono text-zinc-500 uppercase">STATUS</span>
+                                <span className={`text-[10px] font-bold uppercase ${
+                                  t.status === 'completed' ? 'text-emerald-400' : 'text-amber-400'
+                                }`}>
+                                  {t.status}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2392,9 +2926,9 @@ export default function UserDashboard({
                   <div>
                     <span className="text-[9px] font-mono text-zinc-550 uppercase block">TOP-UP WALLET</span>
                     <span className="text-sm font-black font-mono text-cyan-400">
-                      💎 {currentUser.topup_diamonds !== undefined ? currentUser.topup_diamonds : (currentUser.diamonds || 0)}
+                      💎 {currentUser.topup_diamonds !== undefined ? currentUser.topup_diamonds : 0}
                     </span>
-                    <span className="text-[8px] text-zinc-500 block">For Tournament Entries (Non-withdrawable)</span>
+                    <span className="text-[8px] text-zinc-500 block">For Tournament Entries (Non-Cash)</span>
                   </div>
                 </div>
 
@@ -2405,29 +2939,29 @@ export default function UserDashboard({
                     <span className="text-sm font-black font-mono text-amber-500">
                       💎 {currentUser.winning_diamonds || 0}
                     </span>
-                    <span className="text-[8px] text-zinc-500 block">From Prizes (Withdrawable)</span>
+                    <span className="text-[8px] text-zinc-500 block">From Prizes (Gross Wallet Credit)</span>
                   </div>
                 </div>
 
-                <div className="p-4 bg-zinc-950 border border-zinc-800 rounded-2xl flex items-center gap-3 bg-gradient-to-br from-zinc-950 to-zinc-900">
-                  <span className="text-2xl">💼</span>
+                <div className="p-4 bg-zinc-950 border border-zinc-850 rounded-2xl flex items-center gap-3">
+                  <span className="text-2xl">🔒</span>
                   <div>
-                    <span className="text-[9px] font-mono text-zinc-550 uppercase block">TOTAL RESERVES</span>
-                    <span className="text-sm font-black font-mono text-white">
-                      💎 {(currentUser.topup_diamonds !== undefined ? currentUser.topup_diamonds : (currentUser.diamonds || 0)) + (currentUser.winning_diamonds || 0)}
+                    <span className="text-[9px] font-mono text-rose-500 uppercase block">LOCKED WITHDRAWAL</span>
+                    <span className="text-sm font-black font-mono text-rose-400">
+                      💎 {currentUser.locked_withdraw_diamonds || 0}
                     </span>
-                    <span className="text-[8px] text-zinc-400 block">Combined Vault Credit</span>
+                    <span className="text-[8px] text-zinc-550 block">In Payout Queue (Pending Review)</span>
                   </div>
                 </div>
 
                 <div className="p-4 bg-emerald-950/20 border border-emerald-900/30 rounded-2xl flex items-center gap-3">
-                  <span className="text-2xl">💰</span>
+                  <span className="text-2xl">⚡</span>
                   <div>
-                    <span className="text-[9px] font-mono text-emerald-500 uppercase block">₹ CASH EQUIVALENT</span>
+                    <span className="text-[9px] font-mono text-emerald-400 uppercase block">AVAILABLE FOR PAYOUT</span>
                     <span className="text-sm font-black font-mono text-emerald-400">
-                      ₹{currentUser.winning_diamonds || 0} INR
+                      💎 {Math.max(0, (currentUser.winning_diamonds || 0) - (currentUser.locked_withdraw_diamonds || 0))}
                     </span>
-                    <span className="text-[8px] text-emerald-600 block">Rate: 1 Diamond = ₹1</span>
+                    <span className="text-[8px] text-emerald-600 block">Instant Withdrawal (Rate: 1💎=₹1)</span>
                   </div>
                 </div>
               </div>
@@ -2439,6 +2973,7 @@ export default function UserDashboard({
                   onClick={() => {
                     setIsWithdrawOpen(false);
                     setIsCustomTopupOpen(false);
+                    setIsTransferOpen(false);
                     setSelectedDiamondPackage(null);
                   }}
                   className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl text-xs font-bold transition-all border border-zinc-800 flex items-center gap-1.5"
@@ -2451,6 +2986,7 @@ export default function UserDashboard({
                   onClick={() => {
                     setIsWithdrawOpen(false);
                     setIsCustomTopupOpen(true);
+                    setIsTransferOpen(false);
                     setSelectedDiamondPackage(null);
                   }}
                   className="px-4 py-2 bg-cyan-500 text-black hover:opacity-95 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
@@ -2463,13 +2999,100 @@ export default function UserDashboard({
                   onClick={() => {
                     setIsCustomTopupOpen(false);
                     setIsWithdrawOpen(true);
+                    setIsTransferOpen(false);
                     setSelectedDiamondPackage(null);
                   }}
                   className="px-4 py-2 bg-amber-500 text-black hover:opacity-95 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
                 >
                   🏧 Withdraw Winnings
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCustomTopupOpen(false);
+                    setIsWithdrawOpen(false);
+                    setIsTransferOpen(!isTransferOpen);
+                    setSelectedDiamondPackage(null);
+                  }}
+                  className={`px-4 py-2 ${isTransferOpen ? 'bg-fuchsia-600 text-white' : 'bg-fuchsia-500 text-black'} hover:opacity-95 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5`}
+                >
+                  🔄 Convert Top-up → Winning
+                </button>
               </div>
+
+              {/* Topup to Winning Balance Transfer Form section */}
+              {isTransferOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-5 bg-zinc-950 border border-zinc-850 rounded-2xl space-y-4"
+                >
+                  <div className="flex justify-between items-center border-b border-zinc-900 pb-3">
+                    <div>
+                      <span className="text-[9px] text-fuchsia-500 font-mono font-bold uppercase block tracking-wider">BALANCE CONVERSION VAULT</span>
+                      <h4 className="text-sm font-extrabold text-white">Transfer Top-up Diamonds to Winning Vault</h4>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsTransferOpen(false)}
+                      className="text-xs text-zinc-500 hover:text-white"
+                    >
+                      Close Form
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleTransferTopupToWinning} className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="block text-[10px] text-zinc-550 uppercase font-mono font-extrabold">
+                          Transfer Amount (Min 1500 💎) *
+                        </label>
+                        <input
+                          type="number"
+                          min="1500"
+                          required
+                          className="w-full bg-zinc-900 border border-zinc-800 text-white rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-fuchsia-500 font-mono"
+                          value={transferAmount}
+                          onChange={e => setTransferAmount(e.target.value)}
+                        />
+                      </div>
+                      
+                      <div className="p-3 bg-zinc-900/40 border border-zinc-850 rounded-lg flex flex-col justify-center text-xs space-y-1">
+                        <div className="flex justify-between font-mono">
+                          <span className="text-zinc-500">Available Top-up:</span>
+                          <span className="text-cyan-400 font-bold">💎 {currentUser.topup_diamonds || 0}</span>
+                        </div>
+                        <div className="flex justify-between font-mono">
+                          <span className="text-zinc-500">Min Required:</span>
+                          <span className="text-rose-400 font-bold">💎 1500</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-[10px] text-zinc-500 leading-normal">
+                      💡 <strong>Conversion Policy:</strong> Transferring Top-up balance to the Winning Vault allows you to merge balances. However, please ensure your balance meets the minimum 1500 diamonds mark. To prevent balance manipulation, once transfer is completed, it is finalized instantly.
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-zinc-900">
+                      <button
+                        type="button"
+                        onClick={() => setIsTransferOpen(false)}
+                        className="px-3.5 py-1.5 bg-zinc-900 hover:bg-zinc-850 text-zinc-400 hover:text-white rounded-lg text-xs"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isSubmittingTransfer}
+                        className="px-4 py-1.5 bg-fuchsia-500 hover:bg-fuchsia-600 text-black font-semibold rounded-lg text-xs transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        {isSubmittingTransfer ? "Executing..." : "Confirm & Transfer"}
+                      </button>
+                    </div>
+                  </form>
+                </motion.div>
+              )}
 
               {/* Withdrawal Request Form section */}
               {isWithdrawOpen && (
@@ -2493,9 +3116,9 @@ export default function UserDashboard({
                   </div>
 
                   {/* Balance warnings */}
-                  {(currentUser.winning_diamonds || 0) < 100 ? (
+                  {((currentUser.winning_diamonds || 0) - (currentUser.locked_withdraw_diamonds || 0)) < 100 ? (
                     <div className="p-3.5 bg-rose-950/20 border border-rose-900/30 text-rose-400 text-xs rounded-xl font-sans font-medium">
-                      ⚠️ Minimum withdrawal is 100 winning diamonds. You currently have only <strong>{currentUser.winning_diamonds || 0}</strong> winning diamonds.
+                      ⚠️ Minimum withdrawal is 100 diamonds. Your available balance is only <strong>{Math.max(0, (currentUser.winning_diamonds || 0) - (currentUser.locked_withdraw_diamonds || 0))}</strong> winning diamonds.
                     </div>
                   ) : null}
 
@@ -2592,9 +3215,9 @@ export default function UserDashboard({
                     <div className="md:col-span-2 pt-2">
                       <button
                         type="submit"
-                        disabled={isSubmittingWithdraw || (currentUser.winning_diamonds || 0) < 100}
+                        disabled={isSubmittingWithdraw || ((currentUser.winning_diamonds || 0) - (currentUser.locked_withdraw_diamonds || 0)) < 100}
                         className={`w-full py-2.5 bg-amber-500 text-black hover:opacity-90 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
-                          isSubmittingWithdraw || (currentUser.winning_diamonds || 0) < 100 ? 'opacity-40 cursor-not-allowed' : ''
+                          isSubmittingWithdraw || ((currentUser.winning_diamonds || 0) - (currentUser.locked_withdraw_diamonds || 0)) < 100 ? 'opacity-40 cursor-not-allowed' : ''
                         }`}
                       >
                         {isSubmittingWithdraw ? 'Processing Dispatch...' : `Submit Withdrawal Request for ₹${withdrawAmount}`}
@@ -2668,24 +3291,35 @@ export default function UserDashboard({
                       </div>
 
                       {/* QR payment receiver */}
-                      <div className="p-4 bg-zinc-900/20 border border-zinc-850 rounded-xl flex flex-col items-center justify-center text-center space-y-3">
-                        {adminSettings.qrCodeUrl ? (
+                      {/* QR payment receiver */}
+                      <div className="p-5 bg-zinc-900/30 border border-zinc-850 rounded-2xl flex flex-col items-center justify-center text-center space-y-4 shadow-xl">
+                        <span className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">
+                          SCAN QR CODE TO INSTANTLY PAY
+                        </span>
+                        
+                        <div 
+                          className="p-3 bg-white rounded-2xl shadow-xl border-4 border-zinc-950/80 hover:scale-105 active:scale-95 transition-transform duration-200 cursor-zoom-in group relative"
+                          onClick={() => setZoomedQrUrl(adminSettings.qrCodeUrl || `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa=${adminSettings.upiId || 'pkumar15187@okaxis'}&pn=EsportsHub&am=${topupAmount * 1}`)}
+                          title="Click to Zoom QR"
+                        >
                           <img
-                            src={adminSettings.qrCodeUrl}
+                            src={adminSettings.qrCodeUrl || `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=upi://pay?pa=${adminSettings.upiId || 'pkumar15187@okaxis'}&pn=EsportsHub&am=${topupAmount * 1}`}
                             alt="Payment QR"
-                            className="bg-white p-2 rounded-lg w-28 h-28 object-contain"
-                          />
-                        ) : (
-                          <img
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=upi://pay?pa=${adminSettings.upiId || 'pkumar15187@okaxis'}&pn=EsportsHub&am=${topupAmount * 1}`}
-                            alt="Dynamic QR"
-                            className="bg-white p-2 rounded-lg w-28 h-28 object-contain"
+                            className="w-36 h-36 object-contain rounded-lg"
                             referrerPolicy="no-referrer"
                           />
-                        )}
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg">
+                            <span className="text-[10px] text-white bg-black/70 px-2.5 py-1 rounded-full font-mono uppercase tracking-wider font-bold">🔍 Click to zoom</span>
+                          </div>
+                        </div>
+                        
                         <div>
-                          <p className="text-[10px] text-zinc-500">UPI Address: <strong className="select-all text-white">{adminSettings.upiId || 'pkumar15187@okaxis'}</strong></p>
-                          <p className="text-[9px] text-amber-500 font-bold mt-1">Pay exactly ₹{topupAmount * 1} INR</p>
+                          <p className="text-[10px] text-amber-500 font-bold font-mono tracking-wider">
+                            Pay exactly <span className="text-white text-xs font-black px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded font-mono">₹{topupAmount * 1} INR</span>
+                          </p>
+                          <p className="text-[8.5px] text-zinc-500 mt-1.5 leading-normal">
+                             Click the QR image to expand & zoom to full size. Scan with any UPI app.
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -2734,6 +3368,11 @@ export default function UserDashboard({
                       >
                         Submit Custom Top-up Verification
                       </button>
+                      {debugStatus && (
+                        <div id="custom-topup-debug-tag" className="p-2 border border-zinc-700 bg-zinc-900/60 text-cyan-400 text-[10px] rounded font-mono text-center select-all">
+                          ℹ️ {debugStatus}
+                        </div>
+                      )}
                     </form>
                   </div>
                 </motion.div>
@@ -2845,33 +3484,33 @@ export default function UserDashboard({
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="p-4 bg-zinc-900/30 rounded-xl border border-zinc-800 flex flex-col items-center justify-center text-center space-y-3">
-                        <span className="text-[9px] text-zinc-400 uppercase font-bold tracking-wider">
-                          QR SCANNER INSTANT PAY
+                      <div className="p-5 bg-zinc-900/30 rounded-2xl border border-zinc-850 flex flex-col items-center justify-center text-center space-y-4 shadow-xl">
+                        <span className="text-[9px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">
+                          SCAN QR CODE TO INSTANTLY PAY
                         </span>
                         
-                        {adminSettings.qrCodeUrl ? (
+                        <div 
+                          className="p-3 bg-white rounded-2xl shadow-xl border-4 border-zinc-950/80 hover:scale-105 active:scale-95 transition-transform duration-200 cursor-zoom-in group relative"
+                          onClick={() => setZoomedQrUrl(adminSettings.qrCodeUrl || `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa=${adminSettings.upiId || 'pkumar15187@okaxis'}&pn=EsportsHub&am=${selectedDiamondPackage.price}`)}
+                          title="Click to Zoom QR"
+                        >
                           <img
-                            src={adminSettings.qrCodeUrl}
+                            src={adminSettings.qrCodeUrl || `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=upi://pay?pa=${adminSettings.upiId || 'pkumar15187@okaxis'}&pn=EsportsHub&am=${selectedDiamondPackage.price}`}
                             alt="Payment QR"
-                            className="bg-white p-2 rounded-lg w-36 h-36 border object-contain"
-                          />
-                        ) : (
-                          <img
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=upi://pay?pa=${adminSettings.upiId || 'pkumar15187@okaxis'}&pn=EsportsHub&am=${selectedDiamondPackage.price}`}
-                            alt="Dynamic QR"
-                            className="bg-white p-2 rounded-lg w-36 h-36 border object-contain font-sans"
+                            className="w-36 h-36 object-contain rounded-lg"
                             referrerPolicy="no-referrer"
                           />
-                        )}
-
-                        <div className="space-y-1">
-                          <p className="text-[10px] text-zinc-550">UPI ADDRESS:</p>
-                          <p className="text-white font-bold select-all tracking-wide text-xs">
-                            {adminSettings.upiId || 'pkumar15187@okaxis'}
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg">
+                            <span className="text-[10px] text-white bg-black/70 px-2.5 py-1 rounded-full font-mono uppercase tracking-wider font-bold">🔍 Click to zoom</span>
+                          </div>
+                        </div>
+                        
+                        <div>
+                          <p className="text-[10px] text-amber-500 font-bold font-mono tracking-wider">
+                            Pay exactly <span className="text-white text-xs font-black px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded font-mono font-sans font-extrabold font-sans font-extrabold">₹{selectedDiamondPackage.price} INR</span>
                           </p>
-                          <p className="text-[9px] text-amber-500 font-bold font-sans mt-1">
-                            Pay exactly ₹{selectedDiamondPackage.price} INR to credit {selectedDiamondPackage.diamonds} 💎
+                          <p className="text-[8.5px] text-zinc-500 mt-1.5 leading-normal">
+                             Click the QR image to expand & zoom to full size. Scan with any UPI app.
                           </p>
                         </div>
                       </div>
@@ -2923,6 +3562,11 @@ export default function UserDashboard({
                         >
                           Complete Verification & File Request
                         </button>
+                        {debugStatus && (
+                          <div id="pkg-topup-debug-tag" className="p-2 border border-zinc-700 bg-zinc-900/60 text-cyan-400 text-[10px] rounded font-mono text-center select-all mt-2">
+                            ℹ️ {debugStatus}
+                          </div>
+                        )}
                       </form>
                     </div>
                   </motion.div>
@@ -3159,40 +3803,38 @@ export default function UserDashboard({
               {/* QR payment details panel */}
               {selectedPremiumTier && (
                 <div className="p-6 bg-zinc-950 rounded-2xl border border-amber-500/20 grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
-                  <div className="text-center space-y-3">
-                    <p className="text-xs font-mono tracking-widest text-zinc-400 uppercase font-black">Scan QR to pay ₹{premiumTiers[selectedPremiumTier].price - Math.floor((premiumTiers[selectedPremiumTier].price * appliedDiscount) / 100)}</p>
-                    <div className="p-3 bg-white w-48 h-48 mx-auto rounded-xl flex items-center justify-center border border-zinc-200">
+                  <div className="text-center space-y-4 max-w-xs mx-auto">
+                    <p className="text-[10px] font-mono tracking-widest text-zinc-400 uppercase font-black">Scan QR scanner to upgrade</p>
+                    <div 
+                      className="p-3 bg-white w-48 h-48 mx-auto rounded-2xl flex items-center justify-center border-4 border-zinc-950/80 shadow-2xl hover:scale-105 active:scale-95 transition-transform duration-200 cursor-zoom-in group relative"
+                      onClick={() => {
+                        if (adminSettings.qrCodeUrl && adminSettings.qrCodeUrl.trim() !== "" && !adminSettings.qrCodeUrl.startsWith('file:///')) {
+                          setZoomedQrUrl(adminSettings.qrCodeUrl);
+                        }
+                      }}
+                      title="Click to Zoom QR"
+                    >
                       {adminSettings.qrCodeUrl && adminSettings.qrCodeUrl.trim() !== "" && !adminSettings.qrCodeUrl.startsWith('file:///') ? (
-                        <img src={adminSettings.qrCodeUrl} alt="Payment scanner" className="max-w-full max-h-full object-contain" referrerPolicy="no-referrer" />
+                        <>
+                          <img src={adminSettings.qrCodeUrl} alt="Payment scanner" className="max-w-full max-h-full object-contain rounded-lg" referrerPolicy="no-referrer" />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg">
+                            <span className="text-[10px] text-white bg-black/70 px-2.5 py-1 rounded-full font-mono uppercase tracking-wider font-bold">🔍 Click to zoom</span>
+                          </div>
+                        </>
                       ) : (
                         <p className="text-rose-600 font-mono text-[11px] uppercase text-center p-4 font-bold">
                           Payment QR not configured. Please contact admin.
                         </p>
                       )}
                     </div>
-                    <span className="text-[10px] text-zinc-500 block">Scan this QR scanner using any UPI app (GPay, PhonePe, Paytm).</span>
-
-                    {adminSettings.upiId && (
-                      <div className="mt-3 p-2 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-between gap-2 max-w-xs mx-auto">
-                        <div className="text-left font-mono text-[11px] truncate flex-1 min-w-0">
-                          <span className="text-zinc-500 block uppercase text-[8px] font-bold">UPI ID Address</span>
-                          <span className="text-white font-semibold block truncate selection:bg-pink-500">{adminSettings.upiId}</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(adminSettings.upiId || '');
-                            addToast("UPI ID copied to clipboard!", "success");
-                          }}
-                          className="bg-amber-400 hover:bg-amber-500 text-zinc-950 px-2 py-1 rounded text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
-                          title="Copy UPI address"
-                          id="copy-upi-payment-btn"
-                        >
-                          <Copy className="w-3 h-3" />
-                          COPY
-                        </button>
-                      </div>
-                    )}
+                    <div>
+                      <p className="text-[10px] text-amber-500 font-bold font-mono tracking-wider">
+                        Pay ₹{premiumTiers[selectedPremiumTier].price - Math.floor((premiumTiers[selectedPremiumTier].price * appliedDiscount) / 100)} INR
+                      </p>
+                      <p className="text-[8.5px] text-zinc-500 mt-1.5 leading-normal">
+                        Click the QR image to expand & zoom to full size. Scan with any UPI app.
+                      </p>
+                    </div>
                   </div>
 
                   <form onSubmit={handlePaymentSubmit} className="space-y-4">
@@ -3477,6 +4119,68 @@ export default function UserDashboard({
               </div>
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+      {/* Zoomable QR code Lightbox */}
+      <AnimatePresence>
+        {zoomedQrUrl && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setZoomedQrUrl(null)}
+            className="fixed inset-0 z-[1000] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 cursor-zoom-out"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-zinc-950 border border-zinc-800 rounded-3xl p-6 md:p-8 max-w-sm w-full space-y-6 text-center shadow-2xl relative select-none"
+            >
+              <button
+                type="button"
+                onClick={() => setZoomedQrUrl(null)}
+                className="absolute top-4 right-4 text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-800 rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold transition-transform hover:scale-105 active:scale-95 cursor-pointer"
+                title="Close Lightbox"
+                id="close-qr-lightbox-btn"
+              >
+                ✕
+              </button>
+              
+              <div className="space-y-1">
+                <span className="text-[9px] text-cyan-400 font-mono tracking-widest uppercase font-black">PAYMENT RECEIVER QR</span>
+                <h4 className="text-sm font-black text-white">Interactive Zoomed View</h4>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl mx-auto shadow-2xl max-w-[260px] max-h-[260px] flex items-center justify-center border-4 border-zinc-900">
+                <img
+                  src={zoomedQrUrl}
+                  alt="Zoomed Payment QR"
+                  className="max-w-full max-h-full object-contain rounded-lg"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+
+              <div className="space-y-1 bg-zinc-900/40 p-3.5 border border-zinc-850 rounded-xl">
+                <p className="text-[10px] text-amber-500 font-bold font-mono uppercase tracking-wider">
+                  SCAN WITH ANY UPI APP
+                </p>
+                <p className="text-[9px] text-zinc-400 leading-normal">
+                  You can use Google Pay, PhonePe, Paytm, or any banking app to scan this QR.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setZoomedQrUrl(null)}
+                className="w-full py-2 bg-zinc-900 hover:bg-zinc-850 text-white rounded-xl text-xs font-mono font-bold transition-all border border-zinc-800 cursor-pointer"
+              >
+                Dismiss Zoom
+              </button>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

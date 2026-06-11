@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Tournament, UserProfile, Team, DbTournamentRegistration, AdminSettings, DbTournamentMatch } from '../types';
+import { Tournament, UserProfile, Team, DbTournamentRegistration, AdminSettings, DbTournamentMatch, TournamentResult } from '../types';
 import { supabaseService } from '../lib/supabaseService';
 import { 
   Trophy, 
@@ -39,6 +39,7 @@ interface TournamentsProps {
     transaction_id?: string | null;
     payment_screenshot_url?: string | null;
   }) => Promise<void>;
+  onCancelRegistration?: (tournamentId: string) => Promise<void>;
   addToast: (text: string, type: 'success' | 'error' | 'warning' | 'info') => void;
   adminSettings?: AdminSettings;
   users?: UserProfile[];
@@ -51,6 +52,7 @@ export default function Tournaments({
   userTeams,
   registrations,
   onRegisterTournament,
+  onCancelRegistration,
   addToast,
   adminSettings,
   users = [],
@@ -60,6 +62,17 @@ export default function Tournaments({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGame, setSelectedGame] = useState('All');
   const [selectedStatus, setSelectedStatus] = useState('All');
+
+  const getParticipantGlobalName = (id: string | null | undefined, type: 'solo' | 'team') => {
+    if (!id) return "BYE";
+    if (type === 'solo') {
+      const user = users.find(u => u.id === id);
+      return user ? (user.gamerName || user.username || user.email || 'Gamer') : 'BYE';
+    } else {
+      const team = allTeams.find(ti => ti.id === id);
+      return team ? team.name : 'BYE';
+    }
+  };
   
   // Details Modal and Registration states
   const [selectedTournament, setSelectedTournament] = useState<Tournament | null>(null);
@@ -70,31 +83,51 @@ export default function Tournaments({
   const [contactEmail, setContactEmail] = useState(currentUser?.email || '');
   const [txnId, setTxnId] = useState('');
   const [screenshotUrl, setScreenshotUrl] = useState('');
+  const [showPlayersList, setShowPlayersList] = useState(false);
 
   // Tournament Bracket Matches state
   const [selectedTourneyMatches, setSelectedTourneyMatches] = useState<DbTournamentMatch[]>([]);
+  const [selectedTourneyResults, setSelectedTourneyResults] = useState<TournamentResult[]>([]);
   const [isLoadingMatches, setIsLoadingMatches] = useState(false);
 
   // Load matches every time selectedTournament modal shifts
   useEffect(() => {
     if (selectedTournament) {
       setIsLoadingMatches(true);
-      supabaseService.getTournamentMatches(selectedTournament.id)
-        .then(matches => {
+      Promise.all([
+        supabaseService.getTournamentMatches(selectedTournament.id),
+        supabaseService.getTournamentResults(selectedTournament.id)
+      ])
+        .then(([matches, results]) => {
           setSelectedTourneyMatches(matches);
+          setSelectedTourneyResults(results);
           setIsLoadingMatches(false);
         })
         .catch(err => {
-          console.error("Failed loading matches:", err);
+          console.error("Failed loading matches or results:", err);
           setIsLoadingMatches(false);
         });
     } else {
       setSelectedTourneyMatches([]);
+      setSelectedTourneyResults([]);
     }
   }, [selectedTournament?.id]);
 
   // Active status tabs (Optional quick tabs to complement search)
-  const [activeTab, setActiveTab] = useState<'all' | 'upcoming' | 'ongoing' | 'completed' | 'cancelled'>('all');
+  const [activeTab, setActiveTab ] = useState<'all' | 'upcoming' | 'ongoing' | 'completed' | 'cancelled'>('all');
+
+  const getSeatNumber = (reg: DbTournamentRegistration) => {
+    if (reg.payment_screenshot_url?.startsWith('seat:')) {
+      const match = reg.payment_screenshot_url.match(/seat:(\d+)/);
+      if (match) {
+        return parseInt(match[1], 10);
+      }
+    }
+    if (typeof (reg as any).seat_number === 'number') {
+      return (reg as any).seat_number;
+    }
+    return 9999;
+  };
 
   // List of unique games for filtering
   const gamesList = ['All', ...Array.from(new Set(tournaments.map(t => t.game).filter(Boolean)))];
@@ -434,7 +467,8 @@ export default function Tournaments({
           </div>
         ) : (
           filteredTournaments.map((tourney) => {
-            const isRegistered = tourney.registrants?.some(r => r.id === currentUser?.id || userTeams.some(ut => ut.id === r.id)) || false;
+            const activeRegOnCard = currentUser ? (registrations || []).find(r => r.tournament_id === tourney.id && r.user_id === currentUser.id && r.status === 'registered') : null;
+            const isRegistered = !!activeRegOnCard;
             const badgeMeta = getStatusBadge(tourney.status);
 
             // Default fallback gradients for cool banner backgrounds
@@ -507,9 +541,17 @@ export default function Tournaments({
                         </span>
                       </div>
                       <div className="bg-zinc-950 p-2.5 rounded-xl border border-zinc-850 space-y-0.5">
-                        <span className="text-[9px] font-mono text-zinc-500 uppercase block tracking-wider">ROSTERS LIMIT</span>
-                        <span className="text-xs font-mono font-bold text-zinc-300">
-                          {tourney.registrants?.length || 0} / {tourney.max_teams || 16} teams
+                        <span className="text-[9px] font-mono text-zinc-500 uppercase block tracking-wider">SEAT CAPACITY</span>
+                        <span className="text-xs font-mono font-bold text-emerald-400">
+                          {(() => {
+                            const maxSeats = tourney.max_teams || tourney.max_players || 16;
+                            const activeRegsOnCard = (registrations || []).filter(
+                              r => r.tournament_id === tourney.id && (((r.status as string) === 'registered') || r.status === 'approved')
+                            );
+                            const filledSeatsOnCard = activeRegsOnCard.length;
+                            const remainingSeatsOnCard = Math.max(0, maxSeats - filledSeatsOnCard);
+                            return `${filledSeatsOnCard} / ${maxSeats} Seats (${remainingSeatsOnCard} left)`;
+                          })()}
                         </span>
                       </div>
                     </div>
@@ -528,9 +570,20 @@ export default function Tournaments({
 
                     {/* Quick Register / status CTA */}
                     {isRegistered ? (
-                      <div className="px-4 text-[10px] font-mono bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center gap-1.5 shrink-0 max-w-[200px]">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        REGISTERED
+                      <div className="flex flex-col gap-1 shrink-0">
+                        <div className="px-3 py-1.5 text-[9px] font-mono bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center gap-1 font-bold">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                          REGISTERED (Seat #{getSeatNumber(activeRegOnCard!)})
+                        </div>
+                        {onCancelRegistration && (
+                          <button
+                            type="button"
+                            onClick={() => onCancelRegistration(tourney.id)}
+                            className="text-[9px] font-mono text-rose-450 hover:text-rose-400 transition-colors bg-rose-500/5 hover:bg-rose-500/10 border border-rose-500/10 rounded py-1 cursor-pointer font-bold uppercase"
+                          >
+                            Exit Seat
+                          </button>
+                        )}
                       </div>
                     ) : (
                       tourney.status !== 'completed' && tourney.status !== 'cancelled' && (
@@ -631,9 +684,205 @@ export default function Tournaments({
                   </div>
                   <div className="space-y-0.5">
                     <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-wide block">👥 ENROLLED</span>
-                    <span className="text-sm font-mono font-black text-cyan-400">{selectedTournament.registrants?.length || 0} squads</span>
+                    <span className="text-sm font-mono font-black text-cyan-400">
+                      {(() => {
+                        const activeRegs = (registrations || []).filter(
+                          r => r.tournament_id === selectedTournament.id && (((r.status as string) === 'registered') || r.status === 'approved')
+                        );
+                        return activeRegs.length;
+                      })()} squads
+                    </span>
                   </div>
                 </div>
+
+                 {/* Part 3: Free Fire MAX Room Details Panel */}
+                {(() => {
+                  const activeRegDetail = currentUser ? (registrations || []).find(r => r.tournament_id === selectedTournament.id && r.user_id === currentUser.id && r.status === 'registered') : null;
+                  const isRevealedByTime = selectedTournament.room_reveal_at && new Date() >= new Date(selectedTournament.room_reveal_at);
+                  const isRevealed = !!(selectedTournament.room_revealed || isRevealedByTime);
+
+                  const copyToClipboard = (text: string, label: string) => {
+                    navigator.clipboard.writeText(text);
+                    addToast(`${label} copied to clipboard!`, 'success');
+                  };
+
+                  return (
+                    <div className="bg-zinc-950 p-5 border border-zinc-850 rounded-2xl space-y-4 shadow-lg">
+                      <div className="flex items-center justify-between border-b border-zinc-900 pb-2.5">
+                        <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5 flex-row">
+                          <span>Free Fire MAX Room Details</span>
+                        </h4>
+                        <span className={`text-[9.5px] font-mono font-bold px-2 py-0.5 rounded leading-none ${
+                          isRevealed ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
+                        }`}>
+                          {isRevealed ? 'UNLOCKED' : 'LOCKED'}
+                        </span>
+                      </div>
+
+                      {!currentUser ? (
+                        <p className="text-zinc-500 font-mono text-[10.5px] text-center italic py-2">
+                          Login and register to view room details.
+                        </p>
+                      ) : !activeRegDetail ? (
+                        <p className="text-zinc-500 font-mono text-[10.5px] text-center italic py-2">
+                          Register to view room details.
+                        </p>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="bg-zinc-900/60 p-3 rounded-xl border border-zinc-850/40 relative flex flex-col gap-1">
+                              <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest">ROOM ID</span>
+                              {isRevealed ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-mono font-bold text-white select-all">{selectedTournament.room_id || 'Not Set'}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => copyToClipboard(selectedTournament.room_id || '', 'Room ID')}
+                                    className="bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 text-[9px] uppercase font-mono px-2 py-1 rounded text-zinc-400 hover:text-white cursor-pointer transition-colors"
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-xs font-mono font-bold text-zinc-600">🔒 Locked</span>
+                              )}
+                            </div>
+
+                            <div className="bg-zinc-900/60 p-3 rounded-xl border border-zinc-850/40 relative flex flex-col gap-1">
+                              <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest">PASSWORD</span>
+                              {isRevealed ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-mono font-bold text-white select-all">{selectedTournament.room_password || 'Not Set'}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => copyToClipboard(selectedTournament.room_password || '', 'Password')}
+                                    className="bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 text-[9px] uppercase font-mono px-2 py-1 rounded text-zinc-400 hover:text-white cursor-pointer transition-colors"
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-xs font-mono font-bold text-zinc-650">🔒 Locked</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {!isRevealed && (
+                            <p className="text-[9.5px] font-mono text-zinc-500 text-center uppercase tracking-wide">
+                              Room details will be revealed by admin before match.
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Public Seat Counter & Beautiful Visual Seat Grid */}
+                {(() => {
+                  const maxSeats = selectedTournament.max_teams || selectedTournament.max_players || 16;
+                  const activeRegs = (registrations || []).filter(
+                    r => r.tournament_id === selectedTournament.id && (((r.status as string) === 'registered') || r.status === 'approved')
+                  );
+                  const filledSeats = activeRegs.length;
+                  const remainingSeats = Math.max(0, maxSeats - filledSeats);
+
+                  return (
+                    <div className="space-y-3.5 bg-zinc-950 p-4 border border-zinc-850 rounded-2xl">
+                      <div className="flex justify-between items-center w-full">
+                        <span className="text-[10px] font-mono font-black text-zinc-400 uppercase tracking-wider">
+                          Seat Availability Counter
+                        </span>
+                        <span className="text-[11px] font-mono text-emerald-400 font-extrabold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                          {filledSeats} / {maxSeats} Filled
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 w-full text-center py-2 bg-zinc-900/60 rounded-xl border border-zinc-850/40">
+                        <div>
+                          <span className="text-[8px] text-zinc-500 font-mono uppercase block">Total Seats</span>
+                          <span className="text-xs font-black text-white">{maxSeats}</span>
+                        </div>
+                        <div className="border-x border-zinc-850">
+                          <span className="text-[8px] text-zinc-500 font-mono uppercase block">Filled Seats</span>
+                          <span className="text-xs font-black text-emerald-400">{filledSeats}</span>
+                        </div>
+                        <div>
+                          <span className="text-[8px] text-zinc-500 font-mono uppercase block">Remaining</span>
+                          <span className="text-xs font-black text-cyan-400">{remainingSeats}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowPlayersList(!showPlayersList)}
+                          className="w-full bg-zinc-900 hover:bg-zinc-850 text-zinc-300 hover:text-white border border-zinc-800 text-[10px] font-mono py-2 rounded-lg transition-colors flex items-center justify-center gap-1 shadow-inner cursor-pointer uppercase font-bold"
+                        >
+                          <Users className="w-3.5 h-3.5 text-zinc-400" />
+                          {showPlayersList ? 'Hide Arena Seat Map' : 'View Arena Seat Map'}
+                        </button>
+
+                        <AnimatePresence>
+                          {showPlayersList && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className="overflow-hidden bg-zinc-950 rounded-xl border border-zinc-850/60 mt-2 p-3 space-y-3"
+                            >
+                              <div className="flex justify-between items-center text-[9px] font-mono text-zinc-550 uppercase tracking-widest border-b border-zinc-900 pb-1.5 font-bold">
+                                <span>Seat Alignment Blueprint</span>
+                                <span className="flex items-center gap-1.5">
+                                  <span className="w-2 h-2 rounded bg-emerald-500/20 border border-emerald-500/40"></span> You
+                                  <span className="w-2 h-2 rounded bg-zinc-900/60 border border-zinc-805"></span> Available
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-h-72 overflow-y-auto pr-1">
+                                {Array.from({ length: maxSeats }).map((_, idx) => {
+                                  const seatNum = idx + 1;
+                                  const reg = activeRegs.find(r => getSeatNumber(r) === seatNum);
+                                  const playerUser = reg ? (users || []).find(u => u.id === reg.user_id) : null;
+                                  const playerName = playerUser?.gamerName || playerUser?.username || 'Gamer';
+                                  const isCurrentUserSeat = reg && currentUser && reg.user_id === currentUser.id;
+
+                                  if (reg) {
+                                    return (
+                                      <div
+                                        key={seatNum}
+                                        className={`p-2 rounded-xl border flex flex-col items-center justify-center text-center gap-0.5 transition-all ${
+                                          isCurrentUserSeat
+                                            ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400 font-bold shadow-[0_0_8px_rgba(16,185,129,0.1)]'
+                                            : 'bg-zinc-900/30 border-zinc-850 text-zinc-300'
+                                        }`}
+                                      >
+                                        <span className="text-[8px] font-mono text-zinc-500">Seat #{seatNum}</span>
+                                        <span className="text-[10px] font-bold truncate max-w-full leading-none mt-0.5">{playerName}</span>
+                                        <span className="text-[7.5px] font-mono text-zinc-500 mt-0.5 uppercase tracking-tight">TAKEN</span>
+                                      </div>
+                                    );
+                                  } else {
+                                    return (
+                                      <div
+                                        key={seatNum}
+                                        className="p-2 rounded-xl border border-zinc-905/30 bg-zinc-950/20 flex flex-col items-center justify-center text-center gap-0.5"
+                                      >
+                                        <span className="text-[8px] font-mono text-zinc-600">Seat #{seatNum}</span>
+                                        <span className="text-[10px] font-bold text-zinc-500">Available</span>
+                                        <span className="text-[7.5px] font-mono text-zinc-700 mt-0.5 uppercase tracking-tight">EMPTY</span>
+                                      </div>
+                                    );
+                                  }
+                                })}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Game Full Information */}
                 {selectedTournament.description && (
@@ -801,17 +1050,6 @@ export default function Tournaments({
                             return `Round of ${Math.pow(2, tr - rn + 1)}`;
                           };
 
-                          const getParticipantName = (id: string | null | undefined, type: 'solo' | 'team') => {
-                            if (!id) return "BYE";
-                            if (type === 'solo') {
-                              const user = users.find(u => u.id === id);
-                              return user ? (user.gamerName || user.username || user.email || 'Gamer') : 'BYE';
-                            } else {
-                              const team = allTeams.find(ti => ti.id === id);
-                              return team ? team.name : 'BYE';
-                            }
-                          };
-
                           return (
                             <div key={roundNum} className="space-y-2">
                               <span className="text-[10px] font-mono font-black text-zinc-400 uppercase tracking-wide block border-b border-zinc-800/40 pb-1">
@@ -822,42 +1060,82 @@ export default function Tournaments({
                                   const p1Id = selectedTournament.registrationType === 'solo' ? match.player1UserId : match.team1Id;
                                   const p2Id = selectedTournament.registrationType === 'solo' ? match.player2UserId : match.team2Id;
 
-                                  const p1Name = getParticipantName(p1Id, selectedTournament.registrationType || 'solo');
-                                  const p2Name = getParticipantName(p2Id, selectedTournament.registrationType || 'solo');
+                                  const p1Name = getParticipantGlobalName(p1Id, selectedTournament.registrationType || 'solo');
+                                  const p2Name = getParticipantGlobalName(p2Id, selectedTournament.registrationType || 'solo');
 
                                   const winnerId = selectedTournament.registrationType === 'solo' ? match.winnerUserId : match.winnerTeamId;
+                                  const result = selectedTourneyResults.find(r => r.match_id === match.id);
 
                                   return (
-                                    <div key={match.id} className="p-3 bg-zinc-950/60 border border-zinc-900 rounded-xl space-y-2">
+                                    <div key={match.id} className="p-4 bg-zinc-950 border border-zinc-850 rounded-2xl space-y-3 shadow-md relative">
                                       <div className="flex justify-between items-center text-[9px] font-mono text-zinc-500">
-                                        <span>Match #{match.matchNumber}</span>
-                                        <span className={`px-1.5 py-0.5 rounded border text-[8px] font-bold ${
+                                        <span className="font-bold uppercase tracking-wider">Match #{match.matchNumber}</span>
+                                        <span className={`px-2 py-0.5 rounded-md border text-[8px] font-bold uppercase ${
                                           match.status === 'live' 
-                                            ? 'bg-rose-500/10 border-rose-500/20 text-rose-400 animate-pulse'
+                                            ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 animate-pulse'
                                             : match.status === 'completed' 
-                                              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-                                              : 'bg-zinc-900 border-zinc-805 text-zinc-400'
+                                              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                                              : match.status === 'disputed'
+                                                ? 'bg-amber-500/10 border-amber-500/30 text-amber-550 animate-bounce'
+                                                : 'bg-zinc-900 border-zinc-805 text-zinc-400'
                                         }`}>
-                                          {match.status.toUpperCase()}
+                                          {match.status}
                                         </span>
                                       </div>
                                       <div className="flex justify-between items-center gap-2">
-                                        <div className={`flex-1 text-center py-1.5 px-2 rounded border truncate text-xs ${
+                                        <div className={`flex-1 text-center py-2 px-3 rounded-xl border truncate text-xs ${
                                           winnerId && winnerId === p1Id && p1Id !== null
-                                            ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 font-extrabold shadow'
-                                            : 'bg-zinc-900/40 border-transparent text-zinc-300'
+                                            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400 font-extrabold shadow-[0_0_8px_rgba(16,185,129,0.15)] animate-pulse'
+                                            : 'bg-zinc-900/60 border-zinc-850/60 text-zinc-300'
                                         }`}>
                                           {p1Name}
                                         </div>
-                                        <span className="text-[9px] font-mono font-bold text-zinc-500">VS</span>
-                                        <div className={`flex-1 text-center py-1.5 px-2 rounded border truncate text-xs ${
+                                        <span className="text-[9px] font-mono font-black text-zinc-550">VS</span>
+                                        <div className={`flex-1 text-center py-2 px-3 rounded-xl border truncate text-xs ${
                                           winnerId && winnerId === p2Id && p2Id !== null
-                                            ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 font-extrabold shadow'
-                                            : 'bg-zinc-900/40 border-transparent text-zinc-300'
+                                            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400 font-extrabold shadow-[0_0_8px_rgba(16,185,129,0.15)] animate-pulse'
+                                            : 'bg-zinc-900/60 border-zinc-850/60 text-zinc-300'
                                         }`}>
                                           {p2Name}
                                         </div>
                                       </div>
+
+                                      {/* Match outcome like score, screenshot, admin notes if any exists */}
+                                      {result && (
+                                        <div className="pt-2.5 border-t border-zinc-900 space-y-1.5 text-[10px] font-mono">
+                                          {result.score && (
+                                            <div className="flex justify-between">
+                                              <span className="text-zinc-500 uppercase text-[8px] tracking-widest">SCORE</span>
+                                              <span className="text-amber-400 font-bold">{result.score}</span>
+                                            </div>
+                                          )}
+                                          {result.notes && (
+                                            <div className="text-zinc-400 bg-zinc-900/40 p-2 rounded-xl border border-zinc-850/50">
+                                              <span className="text-[8px] text-amber-500/70 font-bold uppercase block tracking-wider">RESULT NOTE</span>
+                                              {result.notes}
+                                            </div>
+                                          )}
+                                          {result.result_screenshot_url && (
+                                            <div className="space-y-1">
+                                              <span className="text-zinc-550 text-[8px] uppercase block tracking-wider">PROOF SCREENSHOT</span>
+                                              <a 
+                                                href={result.result_screenshot_url} 
+                                                target="_blank" 
+                                                referrerPolicy="no-referrer"
+                                                rel="noopener noreferrer"
+                                                className="block overflow-hidden rounded-lg border border-zinc-800 hover:border-amber-550/40 transition-colors"
+                                              >
+                                                <img 
+                                                  src={result.result_screenshot_url} 
+                                                  alt="match_screenshot" 
+                                                  referrerPolicy="no-referrer"
+                                                  className="w-full h-20 object-cover hover:scale-105 transition-transform"
+                                                />
+                                              </a>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
                                     </div>
                                   );
                                 })}
@@ -866,6 +1144,50 @@ export default function Tournaments({
                           );
                         })}
                       </div>
+
+                      {/* Match History List */}
+                      {selectedTourneyMatches.some(m => m.status === 'completed' || m.status === 'disputed') && (
+                        <div className="space-y-3 pt-5 border-t border-zinc-900 mt-6 md:p-1">
+                          <h4 className="text-xs font-mono font-bold uppercase text-zinc-400 tracking-wider flex items-center gap-1.5">
+                            <Layers className="w-3.5 h-3.5 text-rose-500" />
+                            Arena Match History & Log
+                          </h4>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-64 overflow-y-auto pr-1">
+                            {selectedTourneyMatches
+                              .filter(m => m.status === 'completed' || m.status === 'disputed')
+                              .map(m => {
+                                const isSolo = selectedTournament.registrationType === 'solo';
+                                const p1Id = isSolo ? m.player1UserId : m.team1Id;
+                                const p2Id = isSolo ? m.player2UserId : m.team2Id;
+                                
+                                const p1Name = getParticipantGlobalName(p1Id, selectedTournament.registrationType || 'solo');
+                                const p2Name = getParticipantGlobalName(p2Id, selectedTournament.registrationType || 'solo');
+                                const winnerName = getParticipantGlobalName(isSolo ? m.winnerUserId : m.winnerTeamId, selectedTournament.registrationType || 'solo');
+                                const res = selectedTourneyResults.find(r => r.match_id === m.id);
+
+                                return (
+                                  <div key={m.id} className="p-3 bg-zinc-950 border border-zinc-850/60 rounded-xl space-y-1.5 shadow-sm">
+                                    <div className="flex justify-between items-center text-[9px] font-mono leading-none border-b border-zinc-900 pb-1">
+                                      <span className="text-zinc-500 font-bold">R{m.roundNumber} - MATCH #{m.matchNumber}</span>
+                                      <span className={`px-1 rounded text-[8px] font-bold uppercase ${
+                                        m.status === 'completed' ? 'text-emerald-400' : 'text-amber-500'
+                                      }`}>
+                                        {m.status}
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-zinc-300 font-sans leading-snug">
+                                      <strong className="text-white">{p1Name}</strong> vs <strong className="text-white">{p2Name}</strong>
+                                    </p>
+                                    <div className="flex justify-between items-center text-[9.5px] font-mono mt-1">
+                                      <span className="text-zinc-500">🏆 Win: <strong className="text-emerald-400 font-bold">{winnerName}</strong></span>
+                                      {res?.score && <span className="text-zinc-500 leading-none">Score: <strong className="text-amber-400 font-bold">{res.score}</strong></span>}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="p-4 bg-zinc-950/40 border border-dashed border-zinc-855 rounded-xl text-center">
@@ -887,23 +1209,44 @@ export default function Tournaments({
 
                   {/* Register placeholder for next phase */}
                   {selectedTournament.status !== 'completed' && selectedTournament.status !== 'cancelled' ? (
-                    selectedTournament.registrants?.some(r => r.id === currentUser?.id || userTeams.some(ut => ut.id === r.id)) ? (
-                      <div className="flex-1 bg-emerald-500/10 border border-emerald-500/35 text-emerald-400 py-3 rounded-2xl font-mono text-xs font-bold uppercase tracking-widest text-center flex items-center justify-center gap-2">
-                        <CheckCircle2 className="w-4 h-4" />
-                        Roster Registered
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowDetailModal(false);
-                          openRegistration(selectedTournament);
-                        }}
-                        className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-black py-3 rounded-2xl text-xs font-mono tracking-widest uppercase transition-all neon-glow-emerald cursor-pointer"
-                      >
-                        🚀 Enter Arena Arena
-                      </button>
-                    )
+                    (() => {
+                      const activeRegDetailModal = currentUser ? (registrations || []).find(r => r.tournament_id === selectedTournament.id && r.user_id === currentUser.id && r.status === 'registered') : null;
+                      if (activeRegDetailModal) {
+                        return (
+                          <div className="flex-1 flex flex-col gap-2">
+                            <div className="bg-emerald-500/10 border border-emerald-500/35 text-emerald-400 py-3 rounded-2xl font-mono text-xs font-bold uppercase tracking-widest text-center flex items-center justify-center gap-2 font-black">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400 animate-pulse" />
+                              You are registered (Seat #{getSeatNumber(activeRegDetailModal)})
+                            </div>
+                            {onCancelRegistration && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowDetailModal(false);
+                                  onCancelRegistration(selectedTournament.id);
+                                }}
+                                className="bg-rose-950 hover:bg-rose-900 border border-rose-500/30 text-rose-400 hover:text-white py-2.5 rounded-2xl font-mono text-xs font-bold uppercase tracking-widest text-center transition-colors cursor-pointer"
+                              >
+                                Exit Tournament (25% Refund)
+                              </button>
+                            )}
+                          </div>
+                        );
+                      } else {
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowDetailModal(false);
+                              openRegistration(selectedTournament);
+                            }}
+                            className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-black py-3 rounded-2xl text-xs font-mono tracking-widest uppercase transition-all neon-glow-emerald cursor-pointer"
+                          >
+                            🚀 Enter Arena
+                          </button>
+                        );
+                      }
+                    })()
                   ) : (
                     <div className="flex-1 bg-zinc-950 text-zinc-600 border border-zinc-855/80 py-3 rounded-2xl font-mono text-xs uppercase tracking-widest text-center cursor-not-allowed">
                       ❌ Signups Closed / Cancelled
@@ -1083,6 +1426,14 @@ export default function Tournaments({
                     </div>
                   </div>
                 )}
+
+                {/* Highlighted Cancellation Policy Note */}
+                <div className="bg-amber-500/5 p-3.5 rounded-xl border border-amber-500/25 space-y-1">
+                  <p className="text-[9.5px] font-mono font-black text-amber-400 uppercase tracking-widest block">Important Notice</p>
+                  <p className="text-[10.5px] text-zinc-350 font-sans leading-relaxed">
+                    If you leave/cancel your tournament registration before the room starts, only <strong className="text-amber-400 font-bold">25% of the registration diamonds</strong> will be refunded. To join again, you must pay the full registration fee once more.
+                  </p>
+                </div>
 
                 {/* Rules Checklist */}
                 <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-850 space-y-1.5">

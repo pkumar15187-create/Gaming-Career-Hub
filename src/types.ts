@@ -73,6 +73,7 @@ export interface UserProfile {
   diamonds?: number;
   topup_diamonds?: number;
   winning_diamonds?: number;
+  locked_withdraw_diamonds?: number;
 
   // Local saves
   savedPlayers: string[]; // array of userIds
@@ -137,7 +138,7 @@ export interface TournamentRegistrant {
   name: string; // gamer name or team name
   logo: string; // photo or logo
   type: 'solo' | 'team';
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'registered';
   contactEmail: string;
   registeredAt: string;
 }
@@ -148,11 +149,15 @@ export interface DbTournamentRegistration {
   user_id: string;
   team_id?: string | null;
   registration_type: 'solo' | 'team';
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'registered';
   payment_status: 'pending' | 'paid' | 'unneeded' | 'rejected';
   transaction_id?: string | null;
   payment_screenshot_url?: string | null;
   registered_at: string;
+  seat_number?: number | null;
+  entry_fee_paid?: number;
+  cancelled_at?: string | null;
+  refund_amount?: number;
 }
 
 
@@ -201,6 +206,11 @@ export interface Tournament {
   tournament_start?: string;
   tournament_end?: string;
   created_at?: string;
+  room_id?: string | null;
+  room_password?: string | null;
+  room_reveal_mode?: 'manual' | 'auto' | string | null;
+  room_reveal_at?: string | null;
+  room_revealed?: boolean;
 }
 
 export interface SponsorApplication {
@@ -300,7 +310,7 @@ export interface DbTournamentMatch {
   team2Id?: string | null;
   winnerUserId?: string | null;
   winnerTeamId?: string | null;
-  status: 'pending' | 'live' | 'completed';
+  status: 'pending' | 'live' | 'completed' | 'disputed';
   scheduledAt?: string | null;
   createdAt?: string;
   
@@ -310,16 +320,34 @@ export interface DbTournamentMatch {
   team1Name?: string;
   team2Name?: string;
   winnerName?: string;
+  score1?: number;
+  score2?: number;
+  screenshot_url?: string;
+  notes?: string;
+}
+
+export interface TournamentResult {
+  id: string;
+  tournament_id: string;
+  match_id: string;
+  winner_user_id?: string | null;
+  winner_team_id?: string | null;
+  score?: string | null;
+  result_screenshot_url?: string | null;
+  notes?: string | null;
+  status: 'pending' | 'live' | 'completed' | 'disputed';
+  created_at?: string;
 }
 
 export interface DiamondTransaction {
   id: string;
   user_id: string;
   wallet_type: 'topup' | 'winning';
-  transaction_type: 'topup_purchase' | 'manual_credit' | 'tournament_entry' | 'tournament_prize' | 'withdraw_request' | 'withdraw_paid' | 'adjustment';
+  transaction_type: 'topup_purchase' | 'manual_credit' | 'tournament_entry' | 'tournament_prize' | 'withdraw_request' | 'withdraw_paid' | 'adjustment' | 'tournament_refund';
   diamonds: number;
   bonus: number;
   total_amount: number;
+  total_credited?: number;
   price_paid: number;
   status: 'pending' | 'approved' | 'rejected' | 'paid';
   transaction_id: string | null;

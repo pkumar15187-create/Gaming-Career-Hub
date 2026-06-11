@@ -1,9 +1,18 @@
 import { supabase, isSupabaseConfigured } from './supabaseClient';
-import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, ProfileComment, DbPayment, DbTournamentRegistration, DbTournamentMatch, DiamondTransaction, WithdrawalRequest } from '../types';
+import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, ProfileComment, DbPayment, DbTournamentRegistration, DbTournamentMatch, DiamondTransaction, WithdrawalRequest, TournamentResult } from '../types';
 import { INITIAL_USERS, INITIAL_TEAMS, INITIAL_TOURNAMENTS, INITIAL_SPONSORS, INITIAL_NOTIFICATIONS, INITIAL_ADMIN_SETTINGS, loadData, saveData } from '../initialData';
 
 // Helper to generate IDs
-const generateUUID = () => crypto.randomUUID();
+const generateUUID = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
 
 export const mapEmailToDomain = (email: string): string => {
   const trimmed = email.trim();
@@ -57,7 +66,8 @@ export const getFallbackUserProfile = (userId: string): UserProfile => ({
   level: 1,
   diamonds: 0,
   topup_diamonds: 0,
-  winning_diamonds: 0
+  winning_diamonds: 0,
+  locked_withdraw_diamonds: 0
 });
 
 export const supabaseService = {
@@ -303,7 +313,10 @@ export const supabaseService = {
             level: u.level || 1,
             last_daily_reward_claimed_at: u.last_daily_reward_claimed_at || null,
             coins: u.coins || 0,
-            diamonds: u.diamonds || 0,
+            diamonds: (u.topup_diamonds || 0) + (u.winning_diamonds || 0),
+            topup_diamonds: u.topup_diamonds || 0,
+            winning_diamonds: u.winning_diamonds || 0,
+            locked_withdraw_diamonds: u.locked_withdraw_diamonds || 0,
             stickers: p.stickers || [],
             activeSticker: p.active_sticker,
             activeFrame: p.active_frame,
@@ -376,9 +389,10 @@ export const supabaseService = {
             level: u.level || 1,
             last_daily_reward_claimed_at: u.last_daily_reward_claimed_at || null,
             coins: u.coins || 0,
-            diamonds: u.diamonds || 0,
+            diamonds: (u.topup_diamonds !== undefined && u.topup_diamonds !== null ? Number(u.topup_diamonds) : 0) + (u.winning_diamonds !== undefined && u.winning_diamonds !== null ? Number(u.winning_diamonds) : 0),
             topup_diamonds: u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : 0,
             winning_diamonds: u.winning_diamonds !== undefined && u.winning_diamonds !== null ? u.winning_diamonds : 0,
+            locked_withdraw_diamonds: u.locked_withdraw_diamonds !== undefined && u.locked_withdraw_diamonds !== null ? u.locked_withdraw_diamonds : 0,
             stickers: prof.stickers || [],
             activeSticker: prof.active_sticker,
             activeFrame: prof.active_frame,
@@ -442,6 +456,10 @@ export const supabaseService = {
               level: uRetry.level || 1,
               last_daily_reward_claimed_at: uRetry.last_daily_reward_claimed_at || null,
               coins: uRetry.coins || 0,
+              diamonds: (uRetry.topup_diamonds !== undefined && uRetry.topup_diamonds !== null ? Number(uRetry.topup_diamonds) : 0) + (uRetry.winning_diamonds !== undefined && uRetry.winning_diamonds !== null ? Number(uRetry.winning_diamonds) : 0),
+              topup_diamonds: uRetry.topup_diamonds !== undefined && uRetry.topup_diamonds !== null ? uRetry.topup_diamonds : 0,
+              winning_diamonds: uRetry.winning_diamonds !== undefined && uRetry.winning_diamonds !== null ? uRetry.winning_diamonds : 0,
+              locked_withdraw_diamonds: uRetry.locked_withdraw_diamonds !== undefined && uRetry.locked_withdraw_diamonds !== null ? uRetry.locked_withdraw_diamonds : 0,
               stickers: prof.stickers || [],
               activeSticker: prof.active_sticker,
               activeFrame: prof.active_frame,
@@ -639,9 +657,9 @@ export const supabaseService = {
         if (updatedFields.premiumBanner !== undefined) userUpdates.premium_banner = updatedFields.premiumBanner;
         if (updatedFields.last_daily_reward_claimed_at !== undefined) userUpdates.last_daily_reward_claimed_at = updatedFields.last_daily_reward_claimed_at;
         if (updatedFields.coins !== undefined) userUpdates.coins = updatedFields.coins;
-        if (updatedFields.diamonds !== undefined) userUpdates.diamonds = updatedFields.diamonds;
         if (updatedFields.topup_diamonds !== undefined) userUpdates.topup_diamonds = updatedFields.topup_diamonds;
         if (updatedFields.winning_diamonds !== undefined) userUpdates.winning_diamonds = updatedFields.winning_diamonds;
+        if (updatedFields.locked_withdraw_diamonds !== undefined) userUpdates.locked_withdraw_diamonds = updatedFields.locked_withdraw_diamonds;
 
         if (Object.keys(userUpdates).length > 0) {
           await supabase.from('users').update(userUpdates).eq('id', userId);
@@ -892,7 +910,7 @@ export const supabaseService = {
       try {
         const { data, error } = await supabase.from('tournaments').select('*');
         if (error) throw error;
-
+ 
         if (data && data.length > 0) {
           // Map into TS Interface
           return data.map((t: any) => ({
@@ -915,17 +933,22 @@ export const supabaseService = {
             max_teams: t.max_teams || 16,
             registrants: typeof t.registrants === 'string' ? JSON.parse(t.registrants) : t.registrants || [],
             winners: typeof t.winners === 'string' ? JSON.parse(t.winners) : t.winners || [],
-            bracket: typeof t.bracket === 'string' ? JSON.parse(t.bracket) : t.bracket || []
+            bracket: typeof t.bracket === 'string' ? JSON.parse(t.bracket) : t.bracket || [],
+            room_id: t.room_id || null,
+            room_password: t.room_password || null,
+            room_reveal_mode: t.room_reveal_mode || 'manual',
+            room_reveal_at: t.room_reveal_at || null,
+            room_revealed: t.room_revealed !== undefined ? t.room_revealed : false
           }));
         }
       } catch (err) {
         console.error("Supabase tournament query failed.", err);
       }
     }
-
+ 
     return loadData<Tournament[]>('gh_tournaments', INITIAL_TOURNAMENTS);
   },
-
+ 
   async createTournament(tourney: any): Promise<Tournament> {
     const id = tourney.id || `tourney-${Date.now()}`;
     const newT: Tournament = {
@@ -949,9 +972,14 @@ export const supabaseService = {
       registration_deadline: tourney.registration_deadline || '',
       tournament_start: tourney.tournament_start || '',
       tournament_end: tourney.tournament_end || '',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      room_id: tourney.room_id || null,
+      room_password: tourney.room_password || null,
+      room_reveal_mode: tourney.room_reveal_mode || 'manual',
+      room_reveal_at: tourney.room_reveal_at || null,
+      room_revealed: tourney.room_revealed || false
     };
-
+ 
     if (isSupabaseConfigured && supabase) {
       try {
         const { error } = await supabase.from('tournaments').insert({
@@ -973,19 +1001,24 @@ export const supabaseService = {
           max_players: newT.max_players,
           registration_deadline: newT.registration_deadline || null,
           tournament_start: newT.tournament_start || null,
-          tournament_end: newT.tournament_end || null
+          tournament_end: newT.tournament_end || null,
+          room_id: newT.room_id,
+          room_password: newT.room_password,
+          room_reveal_mode: newT.room_reveal_mode,
+          room_reveal_at: newT.room_reveal_at,
+          room_revealed: newT.room_revealed
         });
         if (error) throw error;
       } catch (err) {
         console.error("Created tournament writing to Supabase failed:", err);
       }
     }
-
+ 
     const currentLocal = loadData<Tournament[]>('gh_tournaments', INITIAL_TOURNAMENTS);
     saveData('gh_tournaments', [...currentLocal, newT]);
     return newT;
   },
-
+ 
   async updateTournament(tourneyId: string, updates: any): Promise<void> {
     if (isSupabaseConfigured && supabase) {
       try {
@@ -1010,14 +1043,19 @@ export const supabaseService = {
         if (updates.registration_deadline !== undefined) dbUpdates.registration_deadline = updates.registration_deadline;
         if (updates.tournament_start !== undefined) dbUpdates.tournament_start = updates.tournament_start;
         if (updates.tournament_end !== undefined) dbUpdates.tournament_end = updates.tournament_end;
-
+        if (updates.room_id !== undefined) dbUpdates.room_id = updates.room_id;
+        if (updates.room_password !== undefined) dbUpdates.room_password = updates.room_password;
+        if (updates.room_reveal_mode !== undefined) dbUpdates.room_reveal_mode = updates.room_reveal_mode;
+        if (updates.room_reveal_at !== undefined) dbUpdates.room_reveal_at = updates.room_reveal_at;
+        if (updates.room_revealed !== undefined) dbUpdates.room_revealed = updates.room_revealed;
+ 
         const { error } = await supabase.from('tournaments').update(dbUpdates).eq('id', tourneyId);
         if (error) throw error;
       } catch (err) {
         console.error("Supabase tournament update failed:", err);
       }
     }
-
+ 
     const currentLocal = loadData<Tournament[]>('gh_tournaments', INITIAL_TOURNAMENTS);
     const updated = currentLocal.map(t => {
       if (t.id === tourneyId) {
@@ -1091,7 +1129,11 @@ export const supabaseService = {
             payment_status: r.payment_status || 'unneeded',
             transaction_id: r.transaction_id,
             payment_screenshot_url: r.payment_screenshot_url,
-            registered_at: r.registered_at
+            registered_at: r.registered_at,
+            seat_number: r.seat_number,
+            entry_fee_paid: r.entry_fee_paid || 0,
+            cancelled_at: r.cancelled_at || null,
+            refund_amount: r.refund_amount || 0
           }));
         }
       } catch (err) {
@@ -1113,7 +1155,11 @@ export const supabaseService = {
       payment_status: reg.payment_status || 'unneeded',
       transaction_id: reg.transaction_id || null,
       payment_screenshot_url: reg.payment_screenshot_url || null,
-      registered_at: new Date().toISOString()
+      registered_at: new Date().toISOString(),
+      seat_number: reg.seat_number !== undefined ? reg.seat_number : null,
+      entry_fee_paid: reg.entry_fee_paid !== undefined ? reg.entry_fee_paid : 0,
+      cancelled_at: reg.cancelled_at || null,
+      refund_amount: reg.refund_amount !== undefined ? reg.refund_amount : 0
     };
 
     if (isSupabaseConfigured && supabase) {
@@ -1127,7 +1173,11 @@ export const supabaseService = {
           status: newReg.status,
           payment_status: newReg.payment_status,
           transaction_id: newReg.transaction_id,
-          payment_screenshot_url: newReg.payment_screenshot_url
+          payment_screenshot_url: newReg.payment_screenshot_url,
+          seat_number: newReg.seat_number,
+          entry_fee_paid: newReg.entry_fee_paid,
+          cancelled_at: newReg.cancelled_at,
+          refund_amount: newReg.refund_amount
         });
         if (error) throw error;
       } catch (err) {
@@ -1140,6 +1190,39 @@ export const supabaseService = {
     return newReg;
   },
 
+  async updateTournamentRegistration(regId: string, updates: Partial<DbTournamentRegistration>): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const dbUpdates: any = {};
+        if (updates.status !== undefined) dbUpdates.status = updates.status;
+        if (updates.payment_status !== undefined) dbUpdates.payment_status = updates.payment_status;
+        if (updates.seat_number !== undefined) dbUpdates.seat_number = updates.seat_number;
+        if (updates.entry_fee_paid !== undefined) dbUpdates.entry_fee_paid = updates.entry_fee_paid;
+        if (updates.cancelled_at !== undefined) dbUpdates.cancelled_at = updates.cancelled_at;
+        if (updates.refund_amount !== undefined) dbUpdates.refund_amount = updates.refund_amount;
+        if (updates.transaction_id !== undefined) dbUpdates.transaction_id = updates.transaction_id;
+        if (updates.payment_screenshot_url !== undefined) dbUpdates.payment_screenshot_url = updates.payment_screenshot_url;
+
+        const { error } = await supabase.from('tournament_registrations').update(dbUpdates).eq('id', regId);
+        if (error) throw error;
+      } catch (err) {
+        console.error("Supabase update registration failed:", err);
+      }
+    }
+
+    const currentLocal = loadData<DbTournamentRegistration[]>('gh_tournament_registrations', []);
+    const updated = currentLocal.map(r => {
+      if (r.id === regId) {
+        return {
+          ...r,
+          ...updates
+        };
+      }
+      return r;
+    });
+    saveData('gh_tournament_registrations', updated);
+  },
+
   async updateTournamentRegistrationStatus(regId: string, status: 'pending' | 'approved' | 'rejected', paymentStatus?: 'pending' | 'paid' | 'unneeded' | 'rejected'): Promise<void> {
     if (isSupabaseConfigured && supabase) {
       try {
@@ -1150,7 +1233,7 @@ export const supabaseService = {
         const { error } = await supabase.from('tournament_registrations').update(dbUpdates).eq('id', regId);
         if (error) throw error;
       } catch (err) {
-        console.error("Supabase update registration failed.", err);
+        console.error("Supabase update registration failed:", err);
       }
     }
 
@@ -1730,22 +1813,22 @@ export const supabaseService = {
       else if (finalPlan === 'Gold') rewardedDiamonds = 20;
       else if (finalPlan === 'Platinum') rewardedDiamonds = 50;
 
-      let currentDiamonds = 0;
+      let currentTopup = 0;
       try {
-        const { data: uData, error: uErr } = await supabase.from('users').select('diamonds').eq('id', userId).maybeSingle();
+        const { data: uData, error: uErr } = await supabase.from('users').select('topup_diamonds, winning_diamonds').eq('id', userId).maybeSingle();
         if (!uErr && uData) {
-          currentDiamonds = uData.diamonds || 0;
+          currentTopup = uData.topup_diamonds || 0;
         }
       } catch (err) {}
 
-      const nextDiamonds = currentDiamonds + rewardedDiamonds;
+      const nextTopup = currentTopup + rewardedDiamonds;
 
       try {
         const { data: upUserData, error: upUserError } = await supabase
           .from('users')
           .update({
             membership: finalPlan,
-            diamonds: nextDiamonds,
+            topup_diamonds: nextTopup,
             updated_at: now.toISOString()
           })
           .eq('id', userId)
@@ -1757,7 +1840,7 @@ export const supabaseService = {
               .from('users')
               .update({
                 membership: finalPlan,
-                diamonds: nextDiamonds
+                topup_diamonds: nextTopup
               })
               .eq('id', userId)
               .select();
@@ -1799,6 +1882,8 @@ export const supabaseService = {
     const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
     const updatedUsers = localUsers.map(u => {
       if (u.id === userId) {
+        const nextLocalTopup = (u.topup_diamonds || 0) + rewardedDiamonds;
+        const nextLocalWinning = u.winning_diamonds || 0;
         return {
           ...u,
           membership: finalPlan,
@@ -1806,7 +1891,9 @@ export const supabaseService = {
           membershipExpires: expiryStr,
           isFeatured: true,
           featuredUntil: expiryStr,
-          diamonds: (u.diamonds || 0) + rewardedDiamonds
+          topup_diamonds: nextLocalTopup,
+          winning_diamonds: nextLocalWinning,
+          diamonds: nextLocalTopup + nextLocalWinning
         };
       }
       return u;
@@ -2045,7 +2132,7 @@ export const supabaseService = {
   // Update specific match details inside a bracket
   async updateMatchStatus(
     matchId: string, 
-    status: 'pending' | 'live' | 'completed', 
+    status: DbTournamentMatch['status'], 
     winnerUserId?: string | null, 
     winnerTeamId?: string | null
   ): Promise<boolean> {
@@ -2102,12 +2189,169 @@ export const supabaseService = {
     return true;
   },
 
+  // Tournament Results
+  async getTournamentResults(tournamentId: string): Promise<TournamentResult[]> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('tournament_results')
+          .select('*')
+          .eq('tournament_id', tournamentId);
+        if (!error && data) {
+          return data.map((r: any) => ({
+            id: r.id,
+            tournament_id: r.tournament_id,
+            match_id: r.match_id,
+            winner_user_id: r.winner_user_id,
+            winner_team_id: r.winner_team_id,
+            score: r.score,
+            result_screenshot_url: r.result_screenshot_url,
+            notes: r.notes,
+            status: r.status || 'pending',
+            created_at: r.created_at
+          }));
+        }
+      } catch (err) {
+        console.error("Supabase tournament_results fetch failed:", err);
+      }
+    }
+    const local = loadData<TournamentResult[]>('gh_tournament_results', []);
+    return local.filter(r => r.tournament_id === tournamentId);
+  },
+
+  async createOrUpdateTournamentResult(result: Omit<TournamentResult, 'id'> & { id?: string }): Promise<TournamentResult> {
+    const id = result.id || 'res-' + generateUUID();
+    const newResult: TournamentResult = {
+      id,
+      tournament_id: result.tournament_id,
+      match_id: result.match_id,
+      winner_user_id: result.winner_user_id || null,
+      winner_team_id: result.winner_team_id || null,
+      score: result.score || null,
+      result_screenshot_url: result.result_screenshot_url || null,
+      notes: result.notes || null,
+      status: result.status || 'pending',
+      created_at: result.created_at || new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { error } = await supabase
+          .from('tournament_results')
+          .upsert({
+            id: newResult.id,
+            tournament_id: newResult.tournament_id,
+            match_id: newResult.match_id,
+            winner_user_id: newResult.winner_user_id,
+            winner_team_id: newResult.winner_team_id,
+            score: newResult.score,
+            result_screenshot_url: newResult.result_screenshot_url,
+            notes: newResult.notes,
+            status: newResult.status,
+            created_at: newResult.created_at
+          });
+        if (error) console.warn("Supabase upsert tournament_results error:", error.message);
+      } catch (err) {
+        console.error("Supabase upsert tournament_results exception:", err);
+      }
+    }
+
+    const localResult = loadData<TournamentResult[]>('gh_tournament_results', []);
+    const existingIdx = localResult.findIndex(r => r.match_id === result.match_id || r.id === id);
+    if (existingIdx !== -1) {
+      localResult[existingIdx] = { ...localResult[existingIdx], ...newResult };
+    } else {
+      localResult.push(newResult);
+    }
+    saveData('gh_tournament_results', localResult);
+
+    return newResult;
+  },
+
+  async progressTournamentWinner(
+    tournamentId: string,
+    completedMatch: DbTournamentMatch,
+    winnerId: string,
+    isSolo: boolean
+  ): Promise<boolean> {
+    const winnerUserId = isSolo ? winnerId : null;
+    const winnerTeamId = isSolo ? null : winnerId;
+
+    // Update match status to completed
+    await this.updateMatchStatus(completedMatch.id, 'completed', winnerUserId, winnerTeamId);
+
+    // Identify next round progression placement
+    const nextRound = completedMatch.roundNumber + 1;
+    const nextMatchNum = Math.ceil(completedMatch.matchNumber / 2);
+
+    const allMatches = await this.getTournamentMatches(tournamentId);
+    const nextMatch = allMatches.find(m => m.roundNumber === nextRound && m.matchNumber === nextMatchNum);
+
+    if (nextMatch) {
+      const isOddMatch = completedMatch.matchNumber % 2 !== 0;
+      const updates: Partial<DbTournamentMatch> = {};
+
+      if (isSolo) {
+        if (isOddMatch) {
+          updates.player1UserId = winnerId;
+        } else {
+          updates.player2UserId = winnerId;
+        }
+      } else {
+        if (isOddMatch) {
+          updates.team1Id = winnerId;
+        } else {
+          updates.team2Id = winnerId;
+        }
+      }
+
+      if (isSupabaseConfigured && supabase) {
+        try {
+          const dbUpdates: any = {};
+          if (updates.player1UserId !== undefined) dbUpdates.player1_user_id = updates.player1UserId;
+          if (updates.player2UserId !== undefined) dbUpdates.player2_user_id = updates.player2UserId;
+          if (updates.team1Id !== undefined) dbUpdates.team1_id = updates.team1Id;
+          if (updates.team2Id !== undefined) dbUpdates.team2_id = updates.team2Id;
+
+          const { error } = await supabase
+            .from('tournament_matches')
+            .update(dbUpdates)
+            .eq('id', nextMatch.id);
+          if (error) throw error;
+        } catch (err) {
+          console.error("Failed to progress winner in next match in Supabase:", err);
+        }
+      }
+
+      const localMatches = loadData<DbTournamentMatch[]>('gh_tournament_matches', []);
+      const idx = localMatches.findIndex(m => m.id === nextMatch.id);
+      if (idx !== -1) {
+        localMatches[idx] = {
+          ...localMatches[idx],
+          ...updates
+        };
+        saveData('gh_tournament_matches', localMatches);
+      }
+    }
+    return true;
+  },
+
   async getDiamondTransactions(): Promise<DiamondTransaction[]> {
     if (isSupabaseConfigured && supabase) {
       try {
-        const { data, error } = await supabase.from('diamond_transactions').select('*');
-        if (error) throw error;
+        console.log("[DEBUG LOG] Fetching all diamond transactions from Supabase...");
+        const { data, error } = await supabase
+          .from('diamond_transactions')
+          .select('*')
+          .order('created_at', { ascending: false });
+        
+        if (error) {
+          console.error("[DEBUG LOG] Supabase fetch pending/all diamond_transactions error details:", error);
+          throw error;
+        }
+        
         if (data) {
+          console.log("[DEBUG LOG] Successfully fetched diamond transactions from Supabase count:", data.length);
           return data.map((d: any) => ({
             id: d.id,
             user_id: d.user_id,
@@ -2115,7 +2359,8 @@ export const supabaseService = {
             transaction_type: d.transaction_type || 'topup_purchase',
             diamonds: Number(d.diamonds || 0),
             bonus: Number(d.bonus || 0),
-            total_amount: Number(d.total_amount !== undefined ? d.total_amount : (d.total_credited !== undefined ? d.total_credited : d.diamonds)),
+            total_amount: Number(d.total_credited !== undefined ? d.total_credited : (d.total_amount !== undefined ? d.total_amount : d.diamonds)),
+            total_credited: Number(d.total_credited !== undefined ? d.total_credited : d.diamonds),
             price_paid: Number(d.price_paid || 0),
             status: d.status,
             transaction_id: d.transaction_id,
@@ -2129,7 +2374,9 @@ export const supabaseService = {
         console.error("Supabase diamond_transactions failed to fetch:", err);
       }
     }
-    return loadData<DiamondTransaction[]>('gh_diamond_transactions', []);
+    console.log("[DEBUG LOG] Falling back to local storage fetch for diamond transactions...");
+    const localData = loadData<DiamondTransaction[]>('gh_diamond_transactions', []);
+    return localData.sort((a,b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
   async createDiamondTransaction(tx: Omit<DiamondTransaction, 'id' | 'approved_at' | 'created_at'> & { approved_at?: string | null }): Promise<DiamondTransaction> {
@@ -2147,6 +2394,7 @@ export const supabaseService = {
       diamonds: tx.diamonds,
       bonus: tx.bonus || 0,
       total_amount,
+      total_credited: total_amount,
       price_paid: tx.price_paid || 0,
       status: tx.status || 'pending',
       transaction_id: tx.transaction_id || null,
@@ -2156,24 +2404,38 @@ export const supabaseService = {
       created_at: new Date().toISOString()
     };
 
+    console.log("[DEBUG LOG] createDiamondTransaction payload build:", newTx);
+
     if (isSupabaseConfigured && supabase) {
       try {
-        await supabase.from('diamond_transactions').insert({
+        const payload = {
           id,
           user_id: tx.user_id,
           wallet_type,
           transaction_type,
           diamonds: tx.diamonds,
           bonus: tx.bonus || 0,
-          total_amount,
           total_credited: total_amount,
           price_paid: tx.price_paid || 0,
           status: tx.status || 'pending',
-          transaction_id: tx.transaction_id,
-          payment_screenshot_url: tx.payment_screenshot_url,
-          note: tx.note,
+          transaction_id: tx.transaction_id || null,
+          payment_screenshot_url: tx.payment_screenshot_url || null,
+          note: tx.note || null,
           approved_at
-        });
+        };
+        console.log("[DEBUG LOG] Supabase insert payload:", payload);
+
+        const { data, error } = await supabase
+          .from('diamond_transactions')
+          .insert(payload)
+          .select();
+
+        if (error) {
+          console.error("[DEBUG LOG] Supabase insert failed error details:", error);
+          throw new Error(`Diamond request save failed: [${error.message}]`);
+        }
+
+        console.log("[DEBUG LOG] Supabase insert result success:", data);
       } catch (err: any) {
         console.error("Supabase failed to insert diamond_transaction:", err);
         throw err;
@@ -2250,7 +2512,7 @@ export const supabaseService = {
         if (txErr) throw txErr;
 
         if (status === 'approved') {
-          const { data: u, error: uErr } = await supabase.from('users').select('topup_diamonds, winning_diamonds, diamonds').eq('id', transaction.user_id).maybeSingle();
+          const { data: u, error: uErr } = await supabase.from('users').select('topup_diamonds, winning_diamonds').eq('id', transaction.user_id).maybeSingle();
           if (uErr) {
             console.error("[DEBUG LOG] Supabase select user error:", uErr);
             throw uErr;
@@ -2258,10 +2520,9 @@ export const supabaseService = {
           let currentTopup = 0;
           let currentWinning = 0;
           if (u) {
-            currentTopup = u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : (u.diamonds || 0);
+            currentTopup = u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : 0;
             currentWinning = u.winning_diamonds || 0;
           }
-          console.log("[DEBUG LOG] user balance before: topup_diamonds =", currentTopup, ", winning_diamonds =", currentWinning);
 
           let nextTopup = currentTopup;
           let nextWinning = currentWinning;
@@ -2272,12 +2533,16 @@ export const supabaseService = {
             nextWinning += transaction.total_amount;
           }
 
-          console.log("[DEBUG LOG] user balance after: topup_diamonds =", nextTopup, ", winning_diamonds =", nextWinning);
+          console.log("[DEBUG LOG] target user id:", transaction.user_id);
+          console.log("[DEBUG LOG] wallet type:", transaction.wallet_type);
+          console.log("[DEBUG LOG] old topup_diamonds:", currentTopup);
+          console.log("[DEBUG LOG] old winning_diamonds:", currentWinning);
+          console.log("[DEBUG LOG] amount to add:", transaction.total_amount);
+          console.log("[DEBUG LOG] update payload:", { topup_diamonds: nextTopup, winning_diamonds: nextWinning });
 
           const { data: updateRes, error: updateErr } = await supabase.from('users').update({
             topup_diamonds: nextTopup,
-            winning_diamonds: nextWinning,
-            diamonds: nextTopup + nextWinning
+            winning_diamonds: nextWinning
           }).eq('id', transaction.user_id).select();
 
           if (updateErr) {
@@ -2334,23 +2599,27 @@ export const supabaseService = {
   async adjustDiamondsManually(userId: string, amount: number, wallet_type: 'topup' | 'winning' = 'topup', reason: string = 'Manual Adjustment'): Promise<void> {
     let currentTopup = 0;
     let currentWinning = 0;
-    let currentLegacy = 0;
 
     if (isSupabaseConfigured && supabase) {
       try {
-        const { data: u, error: uErr } = await supabase.from('users').select('topup_diamonds, winning_diamonds, diamonds').eq('id', userId).maybeSingle();
-        if (!uErr && u) {
-          currentTopup = u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : (u.diamonds || 0);
-          currentWinning = u.winning_diamonds || 0;
-          currentLegacy = u.diamonds || 0;
+        const { data: u, error: uErr } = await supabase.from('users').select('topup_diamonds, winning_diamonds').eq('id', userId).maybeSingle();
+        if (uErr) {
+          console.error("[DEBUG LOG] failed to read user for manual adjustment:", uErr);
+          throw uErr;
         }
-      } catch (err) {}
+        if (u) {
+          currentTopup = u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : 0;
+          currentWinning = u.winning_diamonds || 0;
+        }
+      } catch (err) {
+        console.error("Supabase failed to read user current balances:", err);
+        throw err;
+      }
     } else {
       const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
       const u = localUsers.find(x => x.id === userId);
       if (u) {
-        currentLegacy = u.diamonds || 0;
-        currentTopup = u.topup_diamonds !== undefined ? u.topup_diamonds : currentLegacy;
+        currentTopup = u.topup_diamonds !== undefined ? u.topup_diamonds : 0;
         currentWinning = u.winning_diamonds || 0;
       }
     }
@@ -2366,12 +2635,18 @@ export const supabaseService = {
 
     const nextLegacy = nextTopup + nextWinning;
 
+    console.log("[DEBUG LOG] target user id:", userId);
+    console.log("[DEBUG LOG] wallet type:", wallet_type);
+    console.log("[DEBUG LOG] old topup_diamonds:", currentTopup);
+    console.log("[DEBUG LOG] old winning_diamonds:", currentWinning);
+    console.log("[DEBUG LOG] amount to add:", amount);
+    console.log("[DEBUG LOG] update payload:", { topup_diamonds: nextTopup, winning_diamonds: nextWinning });
+
     if (isSupabaseConfigured && supabase) {
       try {
         const { error: adjustErr } = await supabase.from('users').update({
           topup_diamonds: nextTopup,
-          winning_diamonds: nextWinning,
-          diamonds: nextLegacy
+          winning_diamonds: nextWinning
         }).eq('id', userId);
         
         if (adjustErr) {
@@ -2411,6 +2686,8 @@ export const supabaseService = {
       payment_screenshot_url: null,
       note: reason || 'Admin Manual Balance Adjustment'
     });
+
+    console.log("[DEBUG LOG] manual credit result success: wallet_type =", wallet_type, "new topup =", nextTopup, "new winning =", nextWinning, "new legacy =", nextLegacy);
   },
 
   async getWithdrawalRequests(): Promise<WithdrawalRequest[]> {
@@ -2454,6 +2731,38 @@ export const supabaseService = {
       paid_at: null
     };
 
+    let currentWinning = 0;
+    let currentLocked = 0;
+    let currentTopup = 0;
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data: u, error: uErr } = await supabase.from('users').select('topup_diamonds, winning_diamonds, locked_withdraw_diamonds').eq('id', req.user_id).maybeSingle();
+        if (!uErr && u) {
+          currentTopup = u.topup_diamonds || 0;
+          currentWinning = u.winning_diamonds || 0;
+          currentLocked = u.locked_withdraw_diamonds || 0;
+        }
+      } catch (err) {
+        console.error("Failed to fetch user in createWithdrawalRequest:", err);
+      }
+    } else {
+      const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+      const u = localUsers.find(x => x.id === req.user_id);
+      if (u) {
+        currentTopup = u.topup_diamonds || 0;
+        currentWinning = u.winning_diamonds || 0;
+        currentLocked = u.locked_withdraw_diamonds || 0;
+      }
+    }
+
+    const available = currentWinning - currentLocked;
+    if (req.amount > available) {
+      throw new Error(`Insufficient available winning balance! Required: ${req.amount}, Available: ${available}`);
+    }
+
+    const nextLocked = currentLocked + req.amount;
+
     if (isSupabaseConfigured && supabase) {
       try {
         await supabase.from('withdrawal_requests').insert({
@@ -2467,10 +2776,27 @@ export const supabaseService = {
           note: req.note,
           status: 'pending'
         });
+
+        await supabase.from('users').update({
+          locked_withdraw_diamonds: nextLocked
+        }).eq('id', req.user_id);
       } catch (err) {
-        console.error("Supabase failed to insert withdrawal request:", err);
+        console.error("Supabase failed to insert withdrawal request or update locked balance:", err);
       }
     }
+
+    const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+    const updatedUsers = localUsers.map(u => {
+      if (u.id === req.user_id) {
+        return {
+          ...u,
+          locked_withdraw_diamonds: nextLocked,
+          diamonds: currentTopup + (u.winning_diamonds || 0)
+        };
+      }
+      return u;
+    });
+    saveData('gh_users', updatedUsers);
 
     const current = loadData<WithdrawalRequest[]>('gh_withdrawal_requests', []);
     saveData('gh_withdrawal_requests', [...current, newReq]);
@@ -2542,16 +2868,26 @@ export const supabaseService = {
         await supabase.from('withdrawal_requests').update(updates).eq('id', reqId);
 
         if (status === 'paid') {
-          const { data: u, error: uErr } = await supabase.from('users').select('topup_diamonds, winning_diamonds, diamonds').eq('id', req.user_id).maybeSingle();
+          const { data: u, error: uErr } = await supabase.from('users').select('topup_diamonds, winning_diamonds, locked_withdraw_diamonds').eq('id', req.user_id).maybeSingle();
           if (!uErr && u) {
-            const currentTopup = u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : (u.diamonds || 0);
             const currentWinning = u.winning_diamonds || 0;
+            const currentLocked = u.locked_withdraw_diamonds || 0;
             const nextWinning = Math.max(0, currentWinning - req!.amount);
-            const nextLegacy = currentTopup + nextWinning;
+            const nextLocked = Math.max(0, currentLocked - req!.amount);
 
             await supabase.from('users').update({
               winning_diamonds: nextWinning,
-              diamonds: nextLegacy
+              locked_withdraw_diamonds: nextLocked
+            }).eq('id', req!.user_id);
+          }
+        } else if (status === 'rejected') {
+          const { data: u, error: uErr } = await supabase.from('users').select('locked_withdraw_diamonds').eq('id', req.user_id).maybeSingle();
+          if (!uErr && u) {
+            const currentLocked = u.locked_withdraw_diamonds || 0;
+            const nextLocked = Math.max(0, currentLocked - req!.amount);
+
+            await supabase.from('users').update({
+              locked_withdraw_diamonds: nextLocked
             }).eq('id', req!.user_id);
           }
         }
@@ -2582,11 +2918,14 @@ export const supabaseService = {
           const legacyDiamonds = u.diamonds || 0;
           const currentTopup = u.topup_diamonds !== undefined ? u.topup_diamonds : legacyDiamonds;
           const currentWinning = u.winning_diamonds || 0;
+          const currentLocked = u.locked_withdraw_diamonds || 0;
           const nextWinning = Math.max(0, currentWinning - req!.amount);
+          const nextLocked = Math.max(0, currentLocked - req!.amount);
           
           return {
             ...u,
             winning_diamonds: nextWinning,
+            locked_withdraw_diamonds: nextLocked,
             diamonds: currentTopup + nextWinning
           };
         }
@@ -2602,26 +2941,113 @@ export const supabaseService = {
         bonus: 0,
         total_amount: -req!.amount,
         price_paid: 0,
-        status: 'paid',
+        status: 'approved',
         transaction_id: req!.id,
         payment_screenshot_url: null,
         note: `Withdrawal successfully paid to UPI: ${req!.upi_id}`
       });
     } else if (status === 'rejected') {
-      await this.createDiamondTransaction({
-        user_id: req!.user_id,
-        wallet_type: 'winning',
-        transaction_type: 'adjustment',
-        diamonds: req!.amount,
-        bonus: 0,
-        total_amount: req!.amount,
-        price_paid: 0,
-        status: 'rejected',
-        transaction_id: req!.id,
-        payment_screenshot_url: null,
-        note: `Withdrawal request of ${req!.amount} rejected. Refunded.`
+      const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+      const updatedUsers = localUsers.map(u => {
+        if (u.id === req!.user_id) {
+          const currentLocked = u.locked_withdraw_diamonds || 0;
+          const nextLocked = Math.max(0, currentLocked - req!.amount);
+          return {
+            ...u,
+            locked_withdraw_diamonds: nextLocked
+          };
+        }
+        return u;
       });
+      saveData('gh_users', updatedUsers);
+      // No refund transaction is added per Part 3 specification
     }
+  },
+
+  async transferTopupToWinning(userId: string, amount: number): Promise<void> {
+    if (amount < 1500) {
+      throw new Error("Minimum transfer is 1500 Diamonds.");
+    }
+
+    let topup = 0;
+    let winning = 0;
+
+    if (isSupabaseConfigured && supabase) {
+      const { data: u, error } = await supabase
+        .from('users')
+        .select('topup_diamonds, winning_diamonds')
+        .eq('id', userId)
+        .maybeSingle();
+      if (!error && u) {
+        topup = u.topup_diamonds || 0;
+        winning = u.winning_diamonds || 0;
+      }
+    } else {
+      const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+      const user = localUsers.find(x => x.id === userId);
+      if (user) {
+        topup = user.topup_diamonds || 0;
+        winning = user.winning_diamonds || 0;
+      }
+    }
+
+    if (topup < amount) {
+      throw new Error(`Insufficient Top-up balance to transfer. Available: ${topup}, Required: ${amount}`);
+    }
+
+    const nextTopup = topup - amount;
+    const nextWinning = winning + amount;
+
+    if (isSupabaseConfigured && supabase) {
+      await supabase.from('users').update({
+        topup_diamonds: nextTopup,
+        winning_diamonds: nextWinning
+      }).eq('id', userId);
+    }
+
+    // fallback localStorage
+    const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+    const updatedUsers = localUsers.map(u => {
+      if (u.id === userId) {
+        return {
+          ...u,
+          topup_diamonds: nextTopup,
+          winning_diamonds: nextWinning,
+          diamonds: nextTopup + nextWinning
+        };
+      }
+      return u;
+    });
+    saveData('gh_users', updatedUsers);
+
+    // Insert transaction
+    await this.createDiamondTransaction({
+      user_id: userId,
+      wallet_type: 'topup',
+      transaction_type: 'topup_to_winning',
+      diamonds: amount,
+      bonus: 0,
+      total_amount: -amount,
+      price_paid: 0,
+      status: 'approved',
+      transaction_id: `transfer-${Date.now()}`,
+      payment_screenshot_url: null,
+      note: `Transferred ${amount} Top-up Diamonds to Winning Vault`
+    });
+
+    await this.createDiamondTransaction({
+      user_id: userId,
+      wallet_type: 'winning',
+      transaction_type: 'topup_to_winning',
+      diamonds: amount,
+      bonus: 0,
+      total_amount: amount,
+      price_paid: 0,
+      status: 'approved',
+      transaction_id: `transfer-${Date.now()}-win`,
+      payment_screenshot_url: null,
+      note: `Received ${amount} Diamonds from Top-up Transfer`
+    });
   }
 };
 

@@ -687,6 +687,14 @@ export default function App() {
   };
 
   // --- Tournament State Updates ---
+  const parseEntryFeeDiamonds = (feeStr: string | undefined): number => {
+    if (!feeStr) return 0;
+    const normalized = feeStr.trim().toLowerCase();
+    if (normalized === 'free' || normalized === '0' || normalized === 'free entry') return 0;
+    const match = normalized.match(/\d+/);
+    return match ? parseInt(match[0], 10) : 0;
+  };
+
   const handleRegisterTournament = async (regData: {
     tournament_id: string;
     registration_type: 'solo' | 'team';
@@ -706,78 +714,92 @@ export default function App() {
       return;
     }
 
-    const parseEntryFeeDiamonds = (feeStr: string | undefined): number => {
-      if (!feeStr) return 0;
-      const normalized = feeStr.trim().toLowerCase();
-      if (normalized === 'free' || normalized === '0' || normalized === 'free entry') return 0;
-      const match = normalized.match(/\d+/);
-      return match ? parseInt(match[0], 10) : 0;
-    };
-
     const entryFeeText = tourney.entry_fee || tourney.entryFee || 'Free';
     const feeDiamonds = parseEntryFeeDiamonds(entryFeeText);
     const isPaid = feeDiamonds > 0;
 
-    // Check duplicate registrations
-    const alreadyRegistered = registrations.some(r => r.tournament_id === regData.tournament_id && r.user_id === currentUser.id);
+    // Fetch up-to-date registrations for this tournament
+    let latestRegistrations = registrations;
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('tournament_registrations').select('*').eq('tournament_id', regData.tournament_id);
+        if (!error && data) {
+          latestRegistrations = data.map((r: any) => ({
+            id: r.id,
+            tournament_id: r.tournament_id,
+            user_id: r.user_id,
+            team_id: r.team_id,
+            registration_type: r.registration_type || 'solo',
+            status: r.status || 'pending',
+            payment_status: r.payment_status || 'unneeded',
+            transaction_id: r.transaction_id,
+            payment_screenshot_url: r.payment_screenshot_url,
+            registered_at: r.registered_at
+          }));
+        }
+      } catch (err) {
+        console.error("Fresh fetch of registrations failed:", err);
+      }
+    }
+
+    // 8. Duplicate Protection
+    const alreadyRegistered = latestRegistrations.some(
+      r => r.tournament_id === regData.tournament_id &&
+           r.user_id === currentUser.id &&
+           (r.status === 'registered' || r.status === 'approved')
+    );
     if (alreadyRegistered) {
-      addToast("You are already registered for this tournament!", "warning");
+      addToast("You are already registered.", "warning");
       return;
     }
 
-    // Check if full
-    const approvedCount = registrations.filter(r => r.tournament_id === regData.tournament_id && r.status === 'approved').length;
-    const limit = tourney.max_teams || tourney.max_players || 16;
-    if (approvedCount >= limit) {
-      addToast("This tournament is already full!", "error");
+    // Capacity checking using live counter (approved or registered)
+    const activeRegs = latestRegistrations.filter(r => r.tournament_id === regData.tournament_id && (r.status === 'registered' || r.status === 'approved'));
+    const current_registered_players = activeRegs.length;
+    const max_slots = tourney.max_teams || tourney.max_players || 16;
+
+    if (current_registered_players >= max_slots) {
+      addToast("Seats Full", "error");
       return;
     }
 
-    // Handle Diamond deduction if paid
+    // 4. Automatic Seat Allocation
+    const occupiedSeats = activeRegs
+      .map(r => {
+        if (r.payment_screenshot_url?.startsWith('seat:')) {
+          const match = r.payment_screenshot_url.match(/seat:(\d+)/);
+          return match ? parseInt(match[1], 10) : null;
+        }
+        return (r as any).seat_number || null;
+      })
+      .filter((s): s is number => s !== null && !isNaN(s));
+
+    let seatNumber = 1;
+    while (occupiedSeats.includes(seatNumber)) {
+      seatNumber++;
+    }
+
+    // Handle Diamond deduction if paid (strictly Top-up check as requested)
     if (isPaid) {
-      const topup = currentUser.topup_diamonds !== undefined ? currentUser.topup_diamonds : (currentUser.diamonds || 0);
-      const winning = currentUser.winning_diamonds || 0;
-      const totalAvailable = topup + winning;
-
-      if (totalAvailable < feeDiamonds) {
-        addToast(`Insufficient Diamonds! Entry requires 💎 ${feeDiamonds} but you only have 💎 ${totalAvailable}. Buy Diamonds to join.`, "warning");
-        setActiveSection('dashboard');
+      const topup = currentUser.topup_diamonds !== undefined && currentUser.topup_diamonds !== null ? currentUser.topup_diamonds : 0;
+      if (topup < feeDiamonds) {
+        addToast("Not enough Diamonds.", "error");
         return;
       }
 
-      let deductFromTopup = 0;
-      let deductFromWinning = 0;
-
-      if (topup >= feeDiamonds) {
-        deductFromTopup = feeDiamonds;
-      } else {
-        const diff = feeDiamonds - topup;
-        const confirmUseWinning = window.confirm(
-          `Your Top-up balance (💎 ${topup}) is insufficient. Do you want to use 💎 ${diff} from your Winning Vault to pay the entry fee?`
-        );
-        if (!confirmUseWinning) {
-          addToast("Registration cancelled: User declined to pay entry fee using Winning Vault.", "info");
-          return;
-        }
-        deductFromTopup = topup;
-        deductFromWinning = diff;
-      }
-
-      const nextTopup = Math.max(0, topup - deductFromTopup);
-      const nextWinning = Math.max(0, winning - deductFromWinning);
-      const nextDiamonds = nextTopup + nextWinning;
+      const nextTopup = topup - feeDiamonds;
+      const nextDiamonds = nextTopup + (currentUser.winning_diamonds || 0);
 
       try {
         await supabaseService.updateProfile(currentUser.id, {
           topup_diamonds: nextTopup,
-          winning_diamonds: nextWinning,
           diamonds: nextDiamonds
         });
 
         // Record diamond transaction for the entry fee
         await supabaseService.createDiamondTransaction({
           user_id: currentUser.id,
-          wallet_type: deductFromWinning > 0 ? 'winning' : 'topup',
+          wallet_type: 'topup',
           transaction_type: 'tournament_entry',
           diamonds: feeDiamonds,
           bonus: 0,
@@ -792,20 +814,18 @@ export default function App() {
         setUsers(prev => prev.map(u => u.id === currentUser.id ? {
           ...u,
           topup_diamonds: nextTopup,
-          winning_diamonds: nextWinning,
           diamonds: nextDiamonds
         } : u));
-
-        addToast(`Successfully paid 💎 ${feeDiamonds} as entry fee (${deductFromTopup > 0 ? `💎 ${deductFromTopup} Top-up` : ''}${deductFromWinning > 0 ? `${deductFromTopup > 0 ? ' + ' : ''}💎 ${deductFromWinning} Winning` : ''}).`, "success");
       } catch (err: any) {
         console.error("Failed to deduct diamonds:", err);
-        addToast("Deduction error. Registration aborted.", "error");
+        addToast("Not enough Diamonds.", "error");
         return;
       }
     }
 
-    const finalStatus = 'approved'; // Active approved slots for both free and paid
+    const finalStatus = 'registered';
     const finalPaymentStatus = isPaid ? 'paid' : 'unneeded';
+    const seatString = `seat:${seatNumber}`;
 
     try {
       const created = await supabaseService.createTournamentRegistration({
@@ -815,15 +835,185 @@ export default function App() {
         registration_type: regData.registration_type,
         status: finalStatus,
         payment_status: finalPaymentStatus,
-        transaction_id: regData.transaction_id || (isPaid ? `diamonds-${Date.now()}` : null),
-        payment_screenshot_url: regData.payment_screenshot_url || (isPaid ? 'diamonds' : null)
+        transaction_id: `seat-${seatNumber}-${Date.now()}`,
+        payment_screenshot_url: seatString,
+        seat_number: seatNumber,
+        entry_fee_paid: isPaid ? feeDiamonds : 0
       });
 
+      // Try updating tournament's current_registered_players count in Supabase
+      if (isSupabaseConfigured && supabase) {
+        try {
+          const new_count = current_registered_players + 1;
+          await supabase.from('tournaments').update({
+            current_registered_players: new_count
+          }).eq('id', tourney.id);
+        } catch (dbErr) {
+          // Gracefully omit if table does not have column
+        }
+      }
+
       setRegistrations(prev => [...prev, created]);
-      addToast("Successfully registered slot for tournament! Slot approved instantly.", "success");
+      addToast("Successfully Registered.", "success");
     } catch (err) {
       console.error(err);
       addToast("Failed to process registration. Please try again.", "error");
+    }
+  };
+
+  const handleCancelTournamentRegistration = async (tournamentId: string) => {
+    if (!currentUser) return;
+
+    const tourney = tournaments.find(t => t.id === tournamentId);
+    if (!tourney) {
+      addToast("Tournament not found!", "error");
+      return;
+    }
+
+    // Find the registration for the current user
+    const reg = registrations.find(r => r.tournament_id === tournamentId && r.user_id === currentUser.id && (r.status === 'registered' || r.status === 'approved'));
+    if (!reg) {
+      addToast("You are not registered for this tournament!", "warning");
+      return;
+    }
+
+    const confirmCancel = window.confirm(
+      "Important:\nIf you leave/cancel your tournament registration before the room starts, only 25% of the registration diamonds will be refunded.\nTo join again, you must pay the full registration fee once more."
+    );
+    if (!confirmCancel) return;
+
+    const entryFeeText = tourney.entry_fee || tourney.entryFee || 'Free';
+    const feeDiamonds = parseEntryFeeDiamonds(entryFeeText);
+    const refundAmount = Math.floor(feeDiamonds * 0.25);
+
+    try {
+      const nowStr = new Date().toISOString();
+      const updates = {
+        status: 'exited' as any,
+        cancelled_at: nowStr,
+        refund_amount: refundAmount
+      };
+
+      // 1. Update registration in Supabase
+      if (isSupabaseConfigured && supabase) {
+        const { error } = await supabase.from('tournament_registrations').update(updates).eq('id', reg.id);
+        if (error) throw error;
+
+        // Try updating tournament count
+        try {
+          const currentCount = registrations.filter(r => r.tournament_id === tournamentId && (r.status === 'registered' || r.status === 'approved')).length;
+          const nextCount = Math.max(0, currentCount - 1);
+          await supabase.from('tournaments').update({
+            current_registered_players: nextCount
+          }).eq('id', tournamentId);
+        } catch (dbErr) {
+          // Gracefully omit
+        }
+      }
+
+      // Sync local storage
+      const localRegs = loadData<DbTournamentRegistration[]>('gh_tournament_registrations', []);
+      const updatedRegs = localRegs.map(r => {
+        if (r.id === reg.id) {
+          return {
+            ...r,
+            status: 'exited' as any,
+            cancelled_at: nowStr,
+            refund_amount: refundAmount
+          };
+        }
+        return r;
+      });
+      saveData('gh_tournament_registrations', updatedRegs);
+
+      // 2. Refund 25% to Top-up Diamonds if fee paid
+      if (refundAmount > 0) {
+        const currentTopup = currentUser.topup_diamonds !== undefined && currentUser.topup_diamonds !== null ? currentUser.topup_diamonds : 0;
+        const nextTopup = currentTopup + refundAmount;
+        const nextDiamonds = nextTopup + (currentUser.winning_diamonds || 0);
+
+        await supabaseService.updateProfile(currentUser.id, {
+          topup_diamonds: nextTopup,
+          diamonds: nextDiamonds
+        });
+
+        // Record a transaction for the refund
+        await supabaseService.createDiamondTransaction({
+          user_id: currentUser.id,
+          wallet_type: 'topup',
+          transaction_type: 'tournament_refund',
+          diamonds: refundAmount,
+          bonus: 0,
+          total_amount: refundAmount,
+          price_paid: 0,
+          status: 'approved',
+          transaction_id: `tourney-refund-${Date.now()}`,
+          payment_screenshot_url: null,
+          note: `Refund 25% for Cancelled Registration: ${tourney.title}`
+        });
+
+        // Update local state for user
+        setUsers(prev => prev.map(u => u.id === currentUser.id ? {
+          ...u,
+          topup_diamonds: nextTopup,
+          diamonds: nextDiamonds
+        } : u));
+
+        addToast(`Registration cancelled. Refunded 💎 ${refundAmount} (25%) to Top-up Wallet.`, "success");
+      } else {
+        addToast("Registration cancelled successfully. No refund needed for Free tournament.", "success");
+      }
+
+      // Update local state for registrations
+      setRegistrations(prev => prev.map(r => r.id === reg.id ? {
+        ...r,
+        status: 'exited' as any,
+        cancelled_at: nowStr,
+        refund_amount: refundAmount
+      } : r));
+
+    } catch (err) {
+      console.error("Cancellation error:", err);
+      addToast("Failed to cancel registration. Please try again.", "error");
+    }
+  };
+
+  const handleAdminRemoveRegistration = async (regId: string) => {
+    const reg = registrations.find(r => r.id === regId);
+    if (!reg) {
+      addToast("Registration record not found.", "warning");
+      return;
+    }
+
+    try {
+      // 1. Delete from Supabase
+      if (isSupabaseConfigured && supabase) {
+        const { error } = await supabase.from('tournament_registrations').delete().eq('id', regId);
+        if (error) throw error;
+
+        // Update tournament counts
+        try {
+          const currentCount = registrations.filter(r => r.tournament_id === reg.tournament_id && (r.status === 'registered' || r.status === 'approved')).length;
+          const nextCount = Math.max(0, currentCount - 1);
+          await supabase.from('tournaments').update({
+            current_registered_players: nextCount
+          }).eq('id', reg.tournament_id);
+        } catch (dbErr) {
+          console.error("Count edit error:", dbErr);
+        }
+      }
+
+      // Sync local storage fallback
+      const localRegs = loadData<DbTournamentRegistration[]>('gh_tournament_registrations', []);
+      const filteredRegs = localRegs.filter(r => r.id !== regId);
+      saveData('gh_tournament_registrations', filteredRegs);
+
+      // Update app registrations state
+      setRegistrations(prev => prev.filter(r => r.id !== regId));
+      addToast("Player removed successfully. Seat slot has been freed.", "success");
+    } catch (err) {
+      console.error(err);
+      addToast("Failed to remove player.", "error");
     }
   };
 
@@ -967,9 +1157,16 @@ export default function App() {
     addToast("Profile destroyed from active databases.", "info");
   };
 
-  const handleAdminUpdateUserProfile = (userId: string, updatedFields: Partial<UserProfile>) => {
-    setUsers(prev => prev.map(u => u.id === userId ? { ...u, ...updatedFields } : u));
-    addToast("Player registry edited successfully.", "success");
+  const handleAdminUpdateUserProfile = async (userId: string, updatedFields: Partial<UserProfile>) => {
+    try {
+      await supabaseService.updateProfile(userId, updatedFields);
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, ...updatedFields } : u));
+      addToast("Player registry edited successfully.", "success");
+    } catch (err: any) {
+      console.error("Failed to update user profile:", err);
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, ...updatedFields } : u));
+      addToast("Player registry edited locally.", "info");
+    }
   };
 
   const handleAdminDeleteTeam = (teamId: string) => {
@@ -1149,6 +1346,17 @@ export default function App() {
     } catch (err: any) {
       console.error("Failed to create tournament:", err);
       addToast("Failed to create tournament.", "error");
+    }
+  };
+
+  const handleUpdateTournament = async (tourneyId: string, updates: Partial<Tournament>) => {
+    try {
+      await supabaseService.updateTournament(tourneyId, updates);
+      setTournaments(prev => prev.map(t => t.id === tourneyId ? { ...t, ...updates } : t));
+      addToast("Tournament updated successfully!", "success");
+    } catch (err: any) {
+      console.error("Failed to update tournament:", err);
+      addToast("Failed to update tournament.", "error");
     }
   };
 
@@ -1530,6 +1738,7 @@ export default function App() {
                   userTeams={teams.filter(t => t.creatorId === currentUserId || t.members.some(m => m.userId === currentUserId))}
                   registrations={registrations}
                   onRegisterTournament={handleRegisterTournament}
+                  onCancelRegistration={handleCancelTournamentRegistration}
                   addToast={addToast}
                   adminSettings={actualAdminSettings}
                   users={users}
@@ -1647,6 +1856,8 @@ export default function App() {
                   onAdminDeleteTournament={handleAdminDeleteTournament}
                   registrations={registrations}
                   onUpdateTournamentRegistrationStatus={handleUpdateRegistrationStatus}
+                  onUpdateTournament={handleUpdateTournament}
+                  onAdminRemoveRegistrationStatus={handleAdminRemoveRegistration}
                 />
               </motion.div>
             )}

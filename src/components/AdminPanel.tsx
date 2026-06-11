@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbPayment, DbTournamentRegistration, DbTournamentMatch } from '../types';
+import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbPayment, DbTournamentRegistration, DbTournamentMatch, TournamentResult } from '../types';
 import { supabaseService } from '../lib/supabaseService';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { ShieldAlert, LogOut, Users, Trophy, DollarSign, Image, Gift, Percent, Plus, Trash, Check, X, Ban, Sparkles, TrendingUp, KeyRound, Sparkle, AlertCircle, RefreshCw, Copy, Upload, Search, Filter, Eye } from 'lucide-react';
@@ -35,6 +35,7 @@ interface AdminPanelProps {
   onUpdateTournament?: (tourneyId: string, updates: Partial<Tournament>) => void;
   registrations?: DbTournamentRegistration[];
   onUpdateTournamentRegistrationStatus?: (regId: string, status: 'approved' | 'rejected', paymentStatus?: 'pending' | 'paid' | 'unneeded' | 'rejected') => Promise<void>;
+  onAdminRemoveRegistrationStatus?: (regId: string) => Promise<void>;
 }
 
 export default function AdminPanel({
@@ -65,7 +66,8 @@ export default function AdminPanel({
   onAdminDeleteTournament,
   onUpdateTournament,
   registrations = [],
-  onUpdateTournamentRegistrationStatus
+  onUpdateTournamentRegistrationStatus,
+  onAdminRemoveRegistrationStatus
 }: AdminPanelProps) {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [username, setUsername] = useState('');
@@ -81,7 +83,8 @@ export default function AdminPanel({
   const [adjustAmount, setAdjustAmount] = useState<number>(10);
   const [adjustReason, setAdjustReason] = useState('');
   const [adjustWalletType, setAdjustWalletType] = useState<'topup' | 'winning'>('topup');
-  const [adjustEmail, setAdjustEmail] = useState('');
+  const [adjustEmail, setAdjustEmail ] = useState('');
+  const [viewPlayersTourneyId, setViewPlayersTourneyId] = useState<string | null>(null);
 
   // Admin Payout Withdrawals states
   const [adminWithdrawals, setAdminWithdrawals] = useState<any[]>([]);
@@ -90,8 +93,35 @@ export default function AdminPanel({
 
   const fetchDiamondTxns = React.useCallback(async () => {
     try {
-      const data = await supabaseService.getDiamondTransactions();
-      setDiamondTransactions(data);
+      if (isSupabaseConfigured && supabase) {
+        const { data, error } = await supabase
+          .from('diamond_transactions')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        
+        const mapped = (data || []).map((d: any) => ({
+          id: d.id,
+          user_id: d.user_id,
+          wallet_type: d.wallet_type || 'topup',
+          transaction_type: d.transaction_type || 'topup_purchase',
+          diamonds: Number(d.diamonds || 0),
+          bonus: Number(d.bonus || 0),
+          total_amount: Number(d.total_credited !== undefined ? d.total_credited : (d.total_amount !== undefined ? d.total_amount : d.diamonds)),
+          total_credited: Number(d.total_credited !== undefined ? d.total_credited : d.diamonds),
+          price_paid: Number(d.price_paid || 0),
+          status: d.status,
+          transaction_id: d.transaction_id,
+          payment_screenshot_url: d.payment_screenshot_url,
+          note: d.note || null,
+          approved_at: d.approved_at,
+          created_at: d.created_at
+        }));
+        setDiamondTransactions(mapped);
+      } else {
+        const data = await supabaseService.getDiamondTransactions();
+        setDiamondTransactions(data);
+      }
     } catch (err) {
       console.error("Failed to load diamond transactions:", err);
     }
@@ -115,6 +145,8 @@ export default function AdminPanel({
 
   const handleApproveDiamondTxn = async (txnId: string) => {
     try {
+      console.log("[DEBUG LOG] Starting handleApproveDiamondTxn with txnId:", txnId);
+
       // 1. read selected diamond_transactions row
       let txn: any = null;
       if (isSupabaseConfigured && supabase) {
@@ -123,18 +155,22 @@ export default function AdminPanel({
           .select('*')
           .eq('id', txnId)
           .maybeSingle();
-        if (error) throw error;
+        if (error) {
+          console.error("[DEBUG LOG] Failed to read transaction from Supabase:", error);
+          throw error;
+        }
         txn = data;
       } else {
         txn = diamondTransactions.find(t => t.id === txnId);
       }
 
       if (!txn) {
-        addToast("Transaction not found", "error");
-        return;
+        throw new Error("Transaction was not found in the database!");
       }
 
-      // 2. if status already approved, do not credit again
+      console.log("[DEBUG LOG] Transaction found for approval:", txn);
+
+      // 2. if status already approved, do not credit again (block duplicate credit)
       if (txn.status === 'approved') {
         addToast("Diamonds already credited for this transaction.", "info");
         return;
@@ -148,12 +184,15 @@ export default function AdminPanel({
       if (isSupabaseConfigured && supabase) {
         const { data: u, error: uErr } = await supabase
           .from('users')
-          .select('topup_diamonds, winning_diamonds, diamonds')
+          .select('topup_diamonds, winning_diamonds')
           .eq('id', txn.user_id)
           .maybeSingle();
-        if (uErr) throw uErr;
+        if (uErr) {
+          console.error("[DEBUG LOG] Failed to fetch target user balance from Supabase:", uErr);
+          throw uErr;
+        }
         if (u) {
-          currentTopup = u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : (u.diamonds || 0);
+          currentTopup = u.topup_diamonds !== undefined && u.topup_diamonds !== null ? u.topup_diamonds : 0;
           currentWinning = u.winning_diamonds || 0;
         }
       } else if (targetUser) {
@@ -165,16 +204,25 @@ export default function AdminPanel({
       const nextTopup = currentTopup + totalCredited;
       const nextDiamonds = nextTopup + currentWinning;
 
-      // Update in Supabase
+      console.log("[DEBUG LOG] target user id:", txn.user_id);
+      console.log("[DEBUG LOG] wallet type: topup");
+      console.log("[DEBUG LOG] old topup_diamonds:", currentTopup);
+      console.log("[DEBUG LOG] old winning_diamonds:", currentWinning);
+      console.log("[DEBUG LOG] amount to add:", totalCredited);
+      console.log("[DEBUG LOG] update payload:", { topup_diamonds: nextTopup });
+
+      // Update user diamonds in Supabase
       if (isSupabaseConfigured && supabase) {
         const { error: userErr } = await supabase
           .from('users')
           .update({
-            topup_diamonds: nextTopup,
-            diamonds: nextDiamonds
+            topup_diamonds: nextTopup
           })
           .eq('id', txn.user_id);
-        if (userErr) throw userErr;
+        if (userErr) {
+          console.error("[DEBUG LOG] Supabase user balance credit failed:", userErr);
+          throw userErr;
+        }
       }
 
       // 4. update diamond_transactions.status = "approved" and set approved_at = now()
@@ -187,7 +235,10 @@ export default function AdminPanel({
             approved_at: approvedAt
           })
           .eq('id', txnId);
-        if (txErr) throw txErr;
+        if (txErr) {
+          console.error("[DEBUG LOG] Supabase diamond_transactions status update failed:", txErr);
+          throw txErr;
+        }
       }
 
       // Update local storage values to keep non-Supabase mode perfectly synchronized
@@ -220,26 +271,53 @@ export default function AdminPanel({
         diamonds: nextDiamonds
       });
 
-      // 5. show "Diamonds credited successfully"
-      addToast("Diamonds credited successfully", "success");
+      console.log("[DEBUG LOG] approve result: Successfully processed and saved!");
 
-      // 6. refetch wallet and pending list
+      // 5. show "Diamonds Credited Successfully"
+      addToast("Diamonds Credited Successfully", "success");
+
+      // 6. refetch pending list & wallet
       fetchDiamondTxns();
       fetchAdminWithdrawals();
     } catch (err: any) {
-      console.error(err);
+      console.error("[DEBUG LOG] approval failed with exception:", err);
       addToast(err.message || "Approval failed.", "error");
     }
   };
 
   const handleRejectDiamondTxn = async (txnId: string) => {
     try {
-      await supabaseService.updateDiamondTransactionStatus(txnId, 'rejected');
+      console.log("[DEBUG LOG] Rejecting diamond transaction id:", txnId);
+      
+      if (isSupabaseConfigured && supabase) {
+        const { error } = await supabase
+          .from('diamond_transactions')
+          .update({
+            status: 'rejected'
+          })
+          .eq('id', txnId);
+        
+        if (error) {
+          console.error("[DEBUG LOG] Rejecting transaction package on Supabase failed:", error);
+          throw error;
+        }
+      }
+
+      const { loadData, saveData } = await import('../initialData');
+      const local = loadData<any[]>('gh_diamond_transactions', []);
+      const updatedLocal = local.map(x => {
+        if (x.id === txnId) {
+          return { ...x, status: 'rejected' };
+        }
+        return x;
+      });
+      saveData('gh_diamond_transactions', updatedLocal);
+
       addToast("Diamond package transaction declined.", "info");
       fetchDiamondTxns();
     } catch (err: any) {
-      console.error(err);
-      addToast(err.message || "Deline failed.", "error");
+      console.error("[DEBUG LOG] rejection failed with exception:", err);
+      addToast(err.message || "Decline failed.", "error");
     }
   };
 
@@ -369,6 +447,11 @@ export default function AdminPanel({
   const [newTourneyStart, setNewTourneyStart] = useState('');
   const [newTourneyEnd, setNewTourneyEnd] = useState('');
   const [newTourneyMaxPlayers, setNewTourneyMaxPlayers] = useState('100');
+  const [newTourneyRoomId, setNewTourneyRoomId] = useState('');
+  const [newTourneyRoomPassword, setNewTourneyRoomPassword] = useState('');
+  const [newTourneyRoomRevealMode, setNewTourneyRoomRevealMode] = useState('manual');
+  const [newTourneyRoomRevealAt, setNewTourneyRoomRevealAt] = useState('');
+  const [newTourneyRoomRevealed, setNewTourneyRoomRevealed] = useState(false);
 
   // Registrations search/filter states
   const [regSearch, setRegSearch] = useState('');
@@ -381,6 +464,16 @@ export default function AdminPanel({
   const [matchesMap, setMatchesMap] = useState<Record<string, DbTournamentMatch[]>>({});
   const [bracketSlotLimit, setBracketSlotLimit] = useState<number>(8);
   const [isUpdatingMatchStatus, setIsUpdatingMatchStatus] = useState<string | null>(null);
+
+  // Phase 6.4 Match Manager / Results States
+  const [resultsMap, setResultsMap] = useState<Record<string, TournamentResult[]>>({});
+  const [editingMatchId, setEditingMatchId] = useState<string | null>(null);
+  const [editingMatchScore, setEditingMatchScore] = useState('');
+  const [editingMatchNotes, setEditingMatchNotes] = useState('');
+  const [editingMatchScreenshot, setEditingMatchScreenshot] = useState('');
+  const [editingMatchWinnerId, setEditingMatchWinnerId] = useState<string | null>(null);
+  const [editingMatchStatus, setEditingMatchStatus] = useState<'pending' | 'live' | 'completed' | 'disputed'>('pending');
+  const [uploadingMatchScreenshot, setUploadingMatchScreenshot] = useState(false);
 
   // Editing existing tournament state variables
   const [editingTourney, setEditingTourney] = useState<Tournament | null>(null);
@@ -399,6 +492,22 @@ export default function AdminPanel({
   const [editTourneyStart, setEditTourneyStart] = useState('');
   const [editTourneyEnd, setEditTourneyEnd] = useState('');
   const [editTourneyMaxPlayers, setEditTourneyMaxPlayers] = useState('100');
+  const [editTourneyRoomId, setEditTourneyRoomId] = useState('');
+  const [editTourneyRoomPassword, setEditTourneyRoomPassword] = useState('');
+  const [editTourneyRoomRevealMode, setEditTourneyRoomRevealMode] = useState('manual');
+  const [editTourneyRoomRevealAt, setEditTourneyRoomRevealAt] = useState('');
+  const [editTourneyRoomRevealed, setEditTourneyRoomRevealed] = useState(false);
+
+  const getParticipantName = (id: string | null | undefined, type: 'solo' | 'team') => {
+    if (!id) return "BYE";
+    if (type === 'solo') {
+      const user = users.find(u => u.id === id);
+      return user ? (user.gamerName || user.username || user.email || 'Gamer') : 'BYE';
+    } else {
+      const team = teams.find(ti => ti.id === id);
+      return team ? team.name : 'BYE';
+    }
+  };
 
   // Coupon addition states
   const [couponCode, setCouponCode] = useState('');
@@ -409,6 +518,12 @@ export default function AdminPanel({
   const [upiIdInput, setUpiIdInput] = useState(adminSettings.upiId || 'careerhub@ybl');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingQr, setUploadingQr] = useState(false);
+
+  // Champion declaration modal states
+  const [declaringTourneyId, setDeclaringTourneyId] = useState<string | null>(null);
+  const [declaringWinnerId, setDeclaringWinnerId] = useState<string>('');
+  const [declaringPrizeAmount, setDeclaringPrizeAmount] = useState<number>(1000);
+  const [declaringNote, setDeclaringNote] = useState<string>('');
 
   // Dynamic Premium Catalog Creation States
   const [badgeName, setBadgeName] = useState('');
@@ -430,6 +545,14 @@ export default function AdminPanel({
   const [rewardName, setRewardName] = useState('');
   const [rewardTier, setRewardTier] = useState<'Silver' | 'Gold' | 'Platinum' | 'All'>('Silver');
   const [rewardDesc, setRewardDesc] = useState('');
+
+  // Inline Free Fire MAX Room Management States
+  const [expandedRoomTourneyId, setExpandedRoomTourneyId] = useState<string | null>(null);
+  const [inlineRoomId, setInlineRoomId] = useState('');
+  const [inlineRoomPassword, setInlineRoomPassword] = useState('');
+  const [inlineRoomRevealMode, setInlineRoomRevealMode] = useState('manual');
+  const [inlineRoomRevealAt, setInlineRoomRevealAt] = useState('');
+  const [inlineRoomRevealed, setInlineRoomRevealed] = useState(false);
 
   // Platinum administrative theme states
   const [platinumUploadUrl, setPlatinumUploadUrl] = useState('');
@@ -641,7 +764,12 @@ export default function AdminPanel({
       registration_deadline: newTourneyRegDeadline,
       tournament_start: newTourneyStart,
       tournament_end: newTourneyEnd,
-      max_players: parseInt(newTourneyMaxPlayers) || 100
+      max_players: parseInt(newTourneyMaxPlayers) || 100,
+      room_id: newTourneyRoomId || '',
+      room_password: newTourneyRoomPassword || '',
+      room_reveal_mode: newTourneyRoomRevealMode,
+      room_reveal_at: newTourneyRoomRevealAt || null,
+      room_revealed: newTourneyRoomRevealed
     });
 
     addToast(`Successfully configured brand new tournament "${newTourneyTitle}"`, "success");
@@ -655,6 +783,11 @@ export default function AdminPanel({
     setNewTourneyStart('');
     setNewTourneyEnd('');
     setNewTourneyMaxPlayers('100');
+    setNewTourneyRoomId('');
+    setNewTourneyRoomPassword('');
+    setNewTourneyRoomRevealMode('manual');
+    setNewTourneyRoomRevealAt('');
+    setNewTourneyRoomRevealed(false);
   };
 
   const handleStartEditTourney = (tourney: Tournament) => {
@@ -675,6 +808,11 @@ export default function AdminPanel({
     setEditTourneyStart(tourney.tournament_start || '');
     setEditTourneyEnd(tourney.tournament_end || '');
     setEditTourneyMaxPlayers(String(tourney.max_players || 100));
+    setEditTourneyRoomId(tourney.room_id || '');
+    setEditTourneyRoomPassword(tourney.room_password || '');
+    setEditTourneyRoomRevealMode(tourney.room_reveal_mode || 'manual');
+    setEditTourneyRoomRevealAt(tourney.room_reveal_at || '');
+    setEditTourneyRoomRevealed(!!tourney.room_revealed);
   };
 
   const handleEditTourneySubmit = (e: React.FormEvent) => {
@@ -711,7 +849,12 @@ export default function AdminPanel({
       registration_deadline: editTourneyRegDeadline,
       tournament_start: editTourneyStart,
       tournament_end: editTourneyEnd,
-      max_players: parseInt(editTourneyMaxPlayers) || 100
+      max_players: parseInt(editTourneyMaxPlayers) || 100,
+      room_id: editTourneyRoomId || '',
+      room_password: editTourneyRoomPassword || '',
+      room_reveal_mode: editTourneyRoomRevealMode,
+      room_reveal_at: editTourneyRoomRevealAt || null,
+      room_revealed: editTourneyRoomRevealed
     };
 
     if (onUpdateTournament) {
@@ -723,13 +866,48 @@ export default function AdminPanel({
     setEditingTourney(null);
   };
 
+  const handleToggleInlineRoom = (tourney: Tournament) => {
+    if (expandedRoomTourneyId === tourney.id) {
+      setExpandedRoomTourneyId(null);
+    } else {
+      setExpandedRoomTourneyId(tourney.id);
+      setInlineRoomId(tourney.room_id || '');
+      setInlineRoomPassword(tourney.room_password || '');
+      setInlineRoomRevealMode(tourney.room_reveal_mode || 'manual');
+      setInlineRoomRevealAt(tourney.room_reveal_at || '');
+      setInlineRoomRevealed(!!tourney.room_revealed);
+    }
+  };
+
+  const handleSaveInlineRoom = async (tourneyId: string, forcedRevealStatus?: boolean) => {
+    const nextRevealed = typeof forcedRevealStatus === 'boolean' ? forcedRevealStatus : inlineRoomRevealed;
+    const updates = {
+      room_id: inlineRoomId,
+      room_password: inlineRoomPassword,
+      room_reveal_mode: inlineRoomRevealMode,
+      room_reveal_at: inlineRoomRevealAt || null,
+      room_revealed: nextRevealed
+    };
+
+    if (onUpdateTournament) {
+      await onUpdateTournament(tourneyId, updates);
+      addToast("Successfully saved Free Fire MAX Room Details.", "success");
+    } else {
+      addToast("Update hook not wired, saving fallback locally.", "info");
+    }
+    setExpandedRoomTourneyId(null);
+  };
+
   // Process and load bracket match trackers
   const loadMatchesForTournament = async (tourneyId: string) => {
     try {
       const loaded = await supabaseService.getTournamentMatches(tourneyId);
       setMatchesMap(prev => ({ ...prev, [tourneyId]: loaded }));
+      
+      const results = await supabaseService.getTournamentResults(tourneyId);
+      setResultsMap(prev => ({ ...prev, [tourneyId]: results }));
     } catch (err) {
-      console.error("Failed loading matches:", err);
+      console.error("Failed loading matches/results:", err);
     }
   };
 
@@ -861,6 +1039,242 @@ export default function AdminPanel({
       addToast(err.message || "Failed to update match.", "error");
     } finally {
       setIsUpdatingMatchStatus(null);
+    }
+  };
+
+  // Start the match editor for a specific match
+  const handleStartMatchEditing = (match: DbTournamentMatch, tourneyId: string) => {
+    const tourney = tournaments.find(t => t.id === tourneyId);
+    const isSolo = tourney ? (tourney.registrationType === 'solo') : true;
+    const winnerId = isSolo ? match.winnerUserId : match.winnerTeamId;
+
+    const matchedResult = (resultsMap[tourneyId] || []).find(r => r.match_id === match.id);
+
+    setEditingMatchId(match.id);
+    setEditingMatchScore(matchedResult?.score || '');
+    setEditingMatchNotes(matchedResult?.notes || '');
+    setEditingMatchScreenshot(matchedResult?.result_screenshot_url || '');
+    setEditingMatchWinnerId(winnerId || null);
+    setEditingMatchStatus(match.status);
+  };
+
+  const handleMatchScreenshotFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setUploadingMatchScreenshot(true);
+      try {
+        if (isSupabaseConfigured && supabase) {
+          const fileExt = file.name.split('.').pop();
+          const customPath = `match-${Date.now()}-${Math.floor(Math.random() * 100000)}.${fileExt}`;
+
+          let { data, error } = await supabase.storage
+            .from('payment_screenshot')
+            .upload(customPath, file, {
+              cacheControl: '3600',
+              upsert: true
+            });
+
+          if (error && (error.message?.toLowerCase().includes('bucket') || (error as any).status === 404)) {
+            try {
+              await supabase.storage.createBucket('payment_screenshot', { public: true });
+              const retryResult = await supabase.storage
+                .from('payment_screenshot')
+                .upload(customPath, file, {
+                  cacheControl: '3600',
+                  upsert: true
+                });
+              if (retryResult.error) throw retryResult.error;
+              data = retryResult.data;
+            } catch (innerBucketErr) {
+              console.warn("Storage uploads unavailable. Falling back to base64 DataURL:");
+              const reader = new FileReader();
+              reader.onload = () => {
+                setEditingMatchScreenshot(reader.result as string);
+                addToast("Proof image loaded locally!", "success");
+              };
+              reader.readAsDataURL(file);
+              return;
+            }
+          } else if (error) {
+            throw error;
+          }
+
+          if (data) {
+            const { data: publicUrlData } = supabase.storage
+              .from('payment_screenshot')
+              .getPublicUrl(customPath);
+            setEditingMatchScreenshot(publicUrlData.publicUrl);
+            addToast("Proof screenshot uploaded successfully!", "success");
+          }
+        } else {
+          // Fallback read as base64 dataurl
+          const reader = new FileReader();
+          reader.onload = () => {
+            setEditingMatchScreenshot(reader.result as string);
+            addToast("Proof image saved locally!", "success");
+          };
+          reader.readAsDataURL(file);
+        }
+      } catch (err: any) {
+        console.error(err);
+        addToast(err.message || "Failed to upload image.", "error");
+      } finally {
+        setUploadingMatchScreenshot(false);
+      }
+    }
+  };
+
+  const handleSaveMatchOutcome = async (match: DbTournamentMatch, tourneyId: string) => {
+    setIsUpdatingMatchStatus(match.id);
+    try {
+      const tourney = tournaments.find(t => t.id === tourneyId);
+      const isSolo = tourney ? (tourney.registrationType === 'solo') : true;
+
+      // 1. Create or update the tournament result entry
+      if (editingMatchWinnerId || editingMatchScore || editingMatchScreenshot || editingMatchNotes) {
+        await supabaseService.createOrUpdateTournamentResult({
+          tournament_id: tourneyId,
+          match_id: match.id,
+          winner_user_id: isSolo ? editingMatchWinnerId : null,
+          winner_team_id: isSolo ? null : editingMatchWinnerId,
+          score: editingMatchScore || null,
+          result_screenshot_url: editingMatchScreenshot || null,
+          notes: editingMatchNotes || null,
+          status: editingMatchStatus,
+        });
+      }
+
+      // 2. update match status and progress winner if completed
+      if (editingMatchStatus === 'completed') {
+        if (!editingMatchWinnerId) {
+          addToast("Please select a winner first to complete the match.", "error");
+          setIsUpdatingMatchStatus(null);
+          return;
+        }
+        
+        await supabaseService.progressTournamentWinner(tourneyId, match, editingMatchWinnerId, isSolo);
+        
+        const totalRounds = Math.max(...(matchesMap[tourneyId] || []).map(m => m.roundNumber), 0);
+        if (match.roundNumber === totalRounds) {
+          addToast("Final Match Completed! You can now declare the Tournament Champion!", "info");
+        }
+      } else {
+        await supabaseService.updateMatchStatus(
+          match.id,
+          editingMatchStatus,
+          isSolo ? editingMatchWinnerId : null,
+          isSolo ? null : editingMatchWinnerId
+        );
+      }
+
+      addToast("Match outcome updated successfully!", "success");
+      setEditingMatchId(null);
+      await loadMatchesForTournament(tourneyId);
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to update match outcome.", "error");
+    } finally {
+      setIsUpdatingMatchStatus(null);
+    }
+  };
+
+  const handleDeclareChampion = async (tourneyId: string, championId: string, customPrize?: number, customNote?: string) => {
+    try {
+      const tourney = tournaments.find(t => t.id === tourneyId);
+      if (!tourney) return;
+
+      const championName = getParticipantName(championId, tourney.registrationType || 'solo');
+
+      // Find winner user profiles
+      let winnerUserIds: string[] = [];
+      if (tourney.registrationType === 'solo') {
+        winnerUserIds.push(championId);
+      } else {
+        const teamReg = (registrations || []).find(r => r.tournament_id === tourneyId && r.team_id === championId && r.status === 'approved');
+        if (teamReg && teamReg.user_id) {
+          winnerUserIds.push(teamReg.user_id);
+        } else {
+          const fallbackReg = (registrations || []).find(r => r.tournament_id === tourneyId && (r.team_id === championId || r.user_id === championId));
+          if (fallbackReg && fallbackReg.user_id) {
+            winnerUserIds.push(fallbackReg.user_id);
+          }
+        }
+      }
+
+      // Extract prize diamonds
+      let prizeDiamonds = 500;
+      if (customPrize !== undefined) {
+        prizeDiamonds = customPrize;
+      } else {
+        const prizePoolStr = tourney.prize_pool || tourney.prizePool || "500";
+        const cleanDigits = prizePoolStr.replace(/,/g, '');
+        const matchDigits = cleanDigits.match(/\d+/);
+        prizeDiamonds = matchDigits ? parseInt(matchDigits[0], 10) : 500;
+      }
+
+      // Award prize to winner winning_diamonds & create transaction
+      for (const userId of winnerUserIds) {
+        const user = users.find(u => u.id === userId);
+        if (user) {
+          const currentWinning = user.winning_diamonds || 0;
+          const nextWinning = currentWinning + prizeDiamonds;
+
+          // Achievements checklist
+          let nextBadges = [...(user.badges || [])];
+          if (!nextBadges.includes("🏆 Champion Badge")) {
+            nextBadges.push("🏆 Champion Badge");
+          }
+          let nextAchievements = [...(user.achievements || [])];
+          if (!nextAchievements.includes("🏆 Champion Badge")) {
+            nextAchievements.push("🏆 Champion Badge");
+          }
+
+          // History checklist
+          const historyItem = {
+            id: `${tourneyId}-${Date.now()}`,
+            tournamentName: tourney.title,
+            date: new Date().toLocaleDateString(),
+            rank: "Champion 🏆",
+            prizeWon: `${prizeDiamonds} Diamonds`
+          };
+          const nextHistory = [historyItem, ...(user.tournamentHistory || [])];
+
+          await onAdminUpdateUserProfile(userId, {
+            winning_diamonds: nextWinning,
+            badges: nextBadges,
+            achievements: nextAchievements,
+            tournamentHistory: nextHistory
+          });
+
+          await supabaseService.createDiamondTransaction({
+            user_id: userId,
+            wallet_type: 'winning',
+            transaction_type: 'tournament_prize',
+            diamonds: prizeDiamonds,
+            bonus: 0,
+            total_amount: prizeDiamonds,
+            price_paid: 0,
+            status: 'approved',
+            transaction_id: `${tourneyId}-${Date.now()}`,
+            payment_screenshot_url: null,
+            note: customNote || `🏆 Champion Reward: ${tourney.title}`
+          });
+        }
+      }
+
+      if (onUpdateTournament) {
+        await onUpdateTournament(tourneyId, {
+          status: 'completed',
+          winners: [{ rank: "Champion 🏆", name: championName, prize: `${prizeDiamonds} Diamonds` }]
+        });
+        addToast(`Successfully declared ${championName} as the Tournament Champion & distributed ${prizeDiamonds} Winning Diamonds!`, "success");
+        await loadMatchesForTournament(tourneyId);
+      } else {
+        addToast("Update callback not configured.", "error");
+      }
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || "Failed to declare champion.", "error");
     }
   };
 
@@ -2166,6 +2580,54 @@ export default function AdminPanel({
                 />
               </div>
 
+              {/* Free Fire MAX Room Details */}
+              <div className="md:col-span-3 border-t border-zinc-855/60 pt-4 mt-2 space-y-4">
+                <h5 className="text-[11px] font-mono font-bold text-red-500 uppercase tracking-widest">Free Fire MAX Room Settings</h5>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Room ID</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 581295"
+                      className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                      value={newTourneyRoomId}
+                      onChange={(e) => setNewTourneyRoomId(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Room Password</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. secret123"
+                      className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                      value={newTourneyRoomPassword}
+                      onChange={(e) => setNewTourneyRoomPassword(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Reveal Mode</label>
+                    <select
+                      className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-zinc-350 focus:outline-none rounded"
+                      value={newTourneyRoomRevealMode}
+                      onChange={(e) => setNewTourneyRoomRevealMode(e.target.value)}
+                    >
+                      <option value="manual">Manual Reveal Mode</option>
+                      <option value="auto">Auto-Reveal Mode</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Auto-Reveal Time</label>
+                    <input
+                      type="datetime-local"
+                      className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                      value={newTourneyRoomRevealAt}
+                      onChange={(e) => setNewTourneyRoomRevealAt(e.target.value)}
+                      disabled={newTourneyRoomRevealMode === 'manual'}
+                    />
+                  </div>
+                </div>
+              </div>
+
               <button
                 type="submit"
                 className="md:col-span-3 bg-red-600 hover:bg-red-700 text-white font-mono text-xs font-bold py-2.5 rounded-xl uppercase tracking-wider"
@@ -2624,6 +3086,65 @@ export default function AdminPanel({
                       />
                     </div>
 
+                    {/* Free Fire MAX Room Details */}
+                    <div className="md:col-span-3 border-t border-zinc-855/60 pt-4 mt-2 space-y-4">
+                      <h5 className="text-[11px] font-mono font-bold text-red-500 uppercase tracking-widest">Free Fire MAX Room Settings</h5>
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div>
+                          <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Room ID</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. 581295"
+                            className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                            value={editTourneyRoomId}
+                            onChange={(e) => setEditTourneyRoomId(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Room Password</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. secret123"
+                            className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded"
+                            value={editTourneyRoomPassword}
+                            onChange={(e) => setEditTourneyRoomPassword(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Reveal Mode</label>
+                          <select
+                            className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-zinc-350 focus:outline-none rounded"
+                            value={editTourneyRoomRevealMode}
+                            onChange={(e) => setEditTourneyRoomRevealMode(e.target.value)}
+                          >
+                            <option value="manual">Manual Reveal Mode</option>
+                            <option value="auto">Auto-Reveal Mode</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Auto-Reveal Time</label>
+                          <input
+                            type="datetime-local"
+                            className="w-full bg-zinc-950 border border-zinc-800 text-xs px-3 py-2 text-white focus:outline-none rounded font-mono"
+                            value={editTourneyRoomRevealAt}
+                            onChange={(e) => setEditTourneyRoomRevealAt(e.target.value)}
+                            disabled={editTourneyRoomRevealMode === 'manual'}
+                          />
+                        </div>
+                        <div className="md:col-span-4 flex items-center gap-2">
+                          <label className="flex items-center gap-2 text-xs font-mono text-zinc-300">
+                            <input
+                              type="checkbox"
+                              checked={editTourneyRoomRevealed}
+                              onChange={(e) => setEditTourneyRoomRevealed(e.target.checked)}
+                              className="rounded border-zinc-800 bg-zinc-950 text-red-650 focus:ring-red-500"
+                            />
+                            Room revealed to registered players immediately (Force Manual Reveal)
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
                     <button
                       type="submit"
                       className="md:col-span-3 bg-red-600 hover:bg-red-700 text-white font-mono text-xs font-bold py-2.5 rounded-xl uppercase tracking-wider"
@@ -2651,17 +3172,6 @@ export default function AdminPanel({
                     const matchesExist = tourneyMatches.length > 0;
                     const isBracketSelected = selectedBracketTourneyId === t.id;
 
-                    const getParticipantName = (id: string | null | undefined, type: 'solo' | 'team') => {
-                      if (!id) return "BYE";
-                      if (type === 'solo') {
-                        const user = users.find(u => u.id === id);
-                        return user ? (user.gamerName || user.username || user.email || 'Gamer') : 'BYE';
-                      } else {
-                        const team = teams.find(ti => ti.id === id);
-                        return team ? team.name : 'BYE';
-                      }
-                    };
-
                     return (
                       <div key={t.id} className="p-4 bg-zinc-950 border border-zinc-850 rounded-2xl space-y-4">
                         <div className="flex justify-between items-center flex-wrap gap-2">
@@ -2685,6 +3195,41 @@ export default function AdminPanel({
                             </button>
                             <button
                               type="button"
+                              onClick={() => setViewPlayersTourneyId(t.id)}
+                              className="bg-purple-950/25 border border-purple-500/30 hover:bg-purple-500 hover:text-zinc-950 text-purple-400 rounded px-2.5 py-1.5 text-[9px] font-mono leading-none font-bold uppercase transition-all cursor-pointer flex items-center gap-1"
+                            >
+                              <Users className="w-3 h-3" />
+                              View Players
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeclaringTourneyId(t.id);
+                                setDeclaringWinnerId('');
+                                const prizePoolStr = t.prize_pool || t.prizePool || "1000";
+                                const digits = prizePoolStr.replace(/,/g, '').match(/\d+/);
+                                const defaultVal = digits ? parseInt(digits[0], 10) : 1000;
+                                setDeclaringPrizeAmount(defaultVal);
+                                setDeclaringNote(`🏆 Winner of ${t.title}`);
+                              }}
+                              className="bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500 hover:text-zinc-950 text-amber-400 rounded px-2.5 py-1.5 text-[9px] font-mono leading-none font-bold uppercase transition-all cursor-pointer flex items-center gap-1.5"
+                            >
+                              🏆 Declare Champion
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleInlineRoom(t)}
+                              className={`border px-2.5 py-1.5 text-[9px] font-mono leading-none font-bold uppercase transition-all cursor-pointer flex items-center gap-1.5 rounded ${
+                                expandedRoomTourneyId === t.id
+                                  ? 'bg-amber-500/25 border-amber-500/40 text-amber-400 font-extrabold'
+                                  : 'bg-zinc-900 border-zinc-800 text-amber-400 hover:border-amber-500/30'
+                              }`}
+                            >
+                              <KeyRound className="w-3.5 h-3.5" />
+                              Room details {t.room_revealed || (t.room_reveal_at && new Date() >= new Date(t.room_reveal_at)) ? '🔓' : '🔒'}
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => handleStartEditTourney(t)}
                               className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-850 text-zinc-300 rounded px-3 py-1.5 text-[9px] font-mono leading-none font-bold uppercase transition-all cursor-pointer"
                             >
@@ -2699,6 +3244,106 @@ export default function AdminPanel({
                             </button>
                           </div>
                         </div>
+
+                        {/* Inline Room Details Management Panel */}
+                        {expandedRoomTourneyId === t.id && (
+                          <div className="bg-zinc-900/90 border border-amber-500/35 rounded-xl p-4 space-y-4 shadow-xl">
+                            <div className="flex border-b border-zinc-80) pb-2">
+                              <span className="text-[10px] font-mono font-bold text-amber-450 uppercase tracking-widest flex items-center gap-1.5">
+                                <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                                Free Fire MAX Room Settings Gate
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                              <div>
+                                <label className="block text-[8px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Room ID</label>
+                                <input
+                                  type="text"
+                                  placeholder="Enter Room ID"
+                                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-2.5 py-1.5 text-white focus:outline-none rounded font-mono"
+                                  value={inlineRoomId}
+                                  onChange={(e) => setInlineRoomId(e.target.value)}
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[8px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Room Password</label>
+                                <input
+                                  type="text"
+                                  placeholder="Enter Password"
+                                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-2.5 py-1.5 text-white focus:outline-none rounded font-mono"
+                                  value={inlineRoomPassword}
+                                  onChange={(e) => setInlineRoomPassword(e.target.value)}
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[8px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Reveal Mode</label>
+                                <select
+                                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-2.5 py-1.5 text-zinc-350 focus:outline-none rounded font-mono"
+                                  value={inlineRoomRevealMode}
+                                  onChange={(e) => setInlineRoomRevealMode(e.target.value)}
+                                >
+                                  <option value="manual">Manual Reveal Mode</option>
+                                  <option value="auto">Auto-Reveal At Time</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[8px] font-mono tracking-widest text-zinc-500 uppercase mb-1">Auto Reveal time</label>
+                                <input
+                                  type="datetime-local"
+                                  className="w-full bg-zinc-950 border border-zinc-800 text-xs px-2.5 py-1.5 text-white focus:outline-none rounded font-mono"
+                                  value={inlineRoomRevealAt}
+                                  onChange={(e) => setInlineRoomRevealAt(e.target.value)}
+                                  disabled={inlineRoomRevealMode === 'manual'}
+                                />
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-zinc-850/65">
+                              <div className="flex items-center gap-4">
+                                <label className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-400 select-none cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={inlineRoomRevealed}
+                                    onChange={(e) => setInlineRoomRevealed(e.target.checked)}
+                                    className="rounded border-zinc-800 bg-zinc-950 text-amber-500 focus:ring-amber-500 focus:ring-offset-zinc-950"
+                                  />
+                                  Room revealed to players?
+                                </label>
+                                <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                                  (inlineRoomRevealed || (inlineRoomRevealAt && new Date() >= new Date(inlineRoomRevealAt)))
+                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                    : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                }`}>
+                                  STATUS: {(inlineRoomRevealed || (inlineRoomRevealAt && new Date() >= new Date(inlineRoomRevealAt))) ? 'REVEALED 🔓' : 'HIDDEN 🔒'}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveInlineRoom(t.id, true)}
+                                  className="bg-emerald-950/40 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-600 hover:text-zinc-950 font-mono font-bold text-[9px] leading-none px-3 py-1.5 rounded transition-all tracking-wider cursor-pointer"
+                                >
+                                  REVEAL NOW 🔓
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveInlineRoom(t.id, false)}
+                                  className="bg-rose-950/40 text-rose-400 border border-rose-500/25 hover:bg-rose-600 hover:text-white font-mono font-bold text-[9px] leading-none px-3 py-1.5 rounded transition-all tracking-wider cursor-pointer"
+                                >
+                                  HIDE AGAIN 🔒
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveInlineRoom(t.id)}
+                                  className="bg-amber-500 hover:bg-amber-600 text-zinc-950 font-mono font-black text-[10px] leading-none px-4 py-2 rounded-lg transition-all shadow-md tracking-wider cursor-pointer"
+                                >
+                                  SAVE CREDENTIALS
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
 
                         {/* Collapsible Bracket Management Area */}
                         {isBracketSelected && (
@@ -2776,67 +3421,240 @@ export default function AdminPanel({
                                           const p2Name = getParticipantName(p2Id, t.registrationType || 'solo');
 
                                           const winnerId = t.registrationType === 'solo' ? match.winnerUserId : match.winnerTeamId;
+                                          
+                                          const resultsList = resultsMap[t.id] || [];
+                                          const matchResult = resultsList.find(r => r.match_id === match.id);
+
+                                          const isEditing = editingMatchId === match.id;
+
+                                          const statusBorderClass = {
+                                            pending: 'border-zinc-850 hover:border-zinc-750',
+                                            live: 'border-rose-500/40 bg-rose-950/5 shadow-[0_0_15px_rgba(244,63,94,0.05)]',
+                                            completed: 'border-emerald-500/40 bg-emerald-950/5',
+                                            disputed: 'border-amber-500/40 bg-amber-950/5',
+                                          }[match.status] || 'border-zinc-850';
 
                                           return (
-                                            <div key={match.id} className="p-3 bg-zinc-950 border border-zinc-850 rounded-xl space-y-3">
+                                            <div key={match.id} className={`p-4 bg-zinc-950 border rounded-2xl transition-all duration-300 space-y-3.5 relative overflow-hidden ${statusBorderClass}`}>
+                                              {/* Ambient status background glows */}
+                                              {match.status === 'live' && (
+                                                <div className="absolute top-0 right-0 w-24 h-24 bg-rose-500/5 rounded-full blur-2xl pointer-events-none" />
+                                              )}
+                                              {match.status === 'disputed' && (
+                                                <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/5 rounded-full blur-2xl pointer-events-none" />
+                                              )}
+
                                               <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500">
-                                                <span>Match #{match.matchNumber}</span>
-                                                <span className={`px-1.5 py-0.5 rounded border text-[8px] font-bold ${
-                                                  match.status === 'live' 
-                                                    ? 'bg-rose-500/10 border-rose-500/20 text-rose-400 animate-pulse'
-                                                    : match.status === 'completed' 
-                                                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-                                                      : 'bg-zinc-900 border-zinc-805 text-zinc-400'
-                                                }`}>
-                                                  {match.status.toUpperCase()}
-                                                </span>
-                                              </div>
-                                              <div className="flex justify-between items-center gap-2">
-                                                <div className={`flex-1 text-center p-2 rounded-lg border transition-all ${
-                                                  winnerId && winnerId === p1Id && p1Id !== null
-                                                    ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400 font-bold'
-                                                    : 'bg-zinc-900/50 border-transparent text-zinc-300'
-                                                }`}>
-                                                  <span className="text-xs truncate block">{p1Name}</span>
-                                                </div>
-                                                <span className="text-[10px] font-mono font-bold text-zinc-500 italic">VS</span>
-                                                <div className={`flex-1 text-center p-2 rounded-lg border transition-all ${
-                                                  winnerId && winnerId === p2Id && p2Id !== null
-                                                    ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400 font-bold'
-                                                    : 'bg-zinc-900/50 border-transparent text-zinc-300'
-                                                }`}>
-                                                  <span className="text-xs truncate block">{p2Name}</span>
+                                                <span className="font-bold tracking-wider uppercase text-zinc-400">Match #{match.matchNumber}</span>
+                                                <div className="flex items-center gap-1.5 font-bold">
+                                                  {matchResult?.score && (
+                                                    <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px]">
+                                                      SCORE: {matchResult.score}
+                                                    </span>
+                                                  )}
+                                                  <span className={`px-2 py-0.5 rounded border text-[8.5px] font-black uppercase ${
+                                                    match.status === 'live' 
+                                                      ? 'bg-rose-500/10 border-rose-500/25 text-rose-400 animate-pulse'
+                                                      : match.status === 'completed' 
+                                                        ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400'
+                                                        : match.status === 'disputed'
+                                                          ? 'bg-amber-500/10 border-amber-500/25 text-amber-500 animate-pulse'
+                                                          : 'bg-zinc-900 border-zinc-805 text-zinc-400'
+                                                  }`}>
+                                                    {match.status}
+                                                  </span>
                                                 </div>
                                               </div>
 
-                                              {/* Admin status adjustments */}
-                                              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-zinc-900">
-                                                <div>
-                                                  <label className="block text-[8px] font-mono text-zinc-500 uppercase mb-0.5">Match Status</label>
-                                                  <select
-                                                    value={match.status}
-                                                    onChange={(e) => handleUpdateMatch(match.id, t.id, e.target.value as any, winnerId || null)}
-                                                    className="w-full bg-zinc-900 border border-zinc-805 text-[9px] font-mono px-1.5 py-1 text-zinc-300 focus:outline-none rounded"
-                                                  >
-                                                    <option value="pending">Pending</option>
-                                                    <option value="live">Live</option>
-                                                    <option value="completed">Completed</option>
-                                                  </select>
+                                              {/* Contenders Visual Deck */}
+                                              <div className="flex justify-between items-center gap-2.5 relative">
+                                                <div className={`flex-1 text-center p-2 rounded-xl border transition-all ${
+                                                  winnerId && winnerId === p1Id && p1Id !== null
+                                                    ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400 font-extrabold'
+                                                    : 'bg-zinc-900/40 border-zinc-900/60 text-zinc-300'
+                                                }`}>
+                                                  <span className="text-[11px] font-bold truncate block">{p1Name}</span>
                                                 </div>
-                                                <div>
-                                                  <label className="block text-[8px] font-mono text-zinc-500 uppercase mb-0.5">Flag Winner</label>
-                                                  <select
-                                                    value={winnerId || ''}
-                                                    onChange={(e) => handleUpdateMatch(match.id, t.id, match.status, e.target.value || null)}
-                                                    disabled={p1Name === 'BYE' && p2Name === 'BYE'}
-                                                    className="w-full bg-zinc-900 border border-zinc-805 text-[9px] font-mono px-1.5 py-1 text-zinc-200 focus:outline-none rounded disabled:opacity-40"
-                                                  >
-                                                    <option value="">No Winner Set</option>
-                                                    {p1Id && <option value={p1Id}>{p1Name}</option>}
-                                                    {p2Id && <option value={p2Id}>{p2Name}</option>}
-                                                  </select>
+                                                <span className="text-[9px] font-mono font-black text-zinc-650 tracking-tight italic">VS</span>
+                                                <div className={`flex-1 text-center p-2 rounded-xl border transition-all ${
+                                                  winnerId && winnerId === p2Id && p2Id !== null
+                                                    ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400 font-extrabold'
+                                                    : 'bg-zinc-900/40 border-zinc-900/60 text-zinc-300'
+                                                }`}>
+                                                  <span className="text-[11px] font-bold truncate block">{p2Name}</span>
                                                 </div>
                                               </div>
+
+                                              {/* Reported Results Badging Sub-Panel */}
+                                              {matchResult && (matchResult.notes || matchResult.result_screenshot_url) && (
+                                                <div className="p-2.5 bg-zinc-900/30 rounded-xl border border-zinc-900/60 text-[9px]/relaxed text-zinc-400 font-mono space-y-1 text-left">
+                                                  {matchResult.notes && (
+                                                    <p className="line-clamp-2"><span className="text-zinc-500 font-bold">INFO:</span> {matchResult.notes}</p>
+                                                  )}
+                                                  {matchResult.result_screenshot_url && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setViewScreenshotUrl(matchResult.result_screenshot_url)}
+                                                      className="text-cyan-400 font-bold hover:underline cursor-pointer flex items-center gap-1 mt-0.5 bg-transparent"
+                                                    >
+                                                      📸 View Proof Screenshot
+                                                    </button>
+                                                  )}
+                                                </div>
+                                              )}
+
+                                              {/* Action Reporting Panel */}
+                                              {!isEditing ? (
+                                                <div className="pt-2 border-t border-zinc-900/80 flex items-center justify-between gap-2">
+                                                  <span className="text-[9.5px] font-mono text-zinc-500 truncate max-w-[150px]">
+                                                    {winnerId ? `Winner: ${getParticipantName(winnerId, t.registrationType || 'solo')}` : 'No outcome reported'}
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleStartMatchEditing(match, t.id)}
+                                                    className="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800 hover:border-zinc-700 font-mono font-black text-[9px] tracking-wider uppercase px-2.5 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                                                  >
+                                                    📝 Edit Details
+                                                  </button>
+                                                </div>
+                                              ) : (
+                                                <div className="pt-3 border-t border-zinc-900/80 space-y-3 font-mono text-[10px] text-left">
+                                                  <div className="flex items-center justify-between">
+                                                    <span className="text-[9.5px] font-black text-rose-500 tracking-wider">🔧 REPORT OUTCOME</span>
+                                                    <button 
+                                                      type="button"
+                                                      onClick={() => setEditingMatchId(null)}
+                                                      className="text-zinc-500 hover:text-white text-[9px]"
+                                                    >
+                                                      CANCEL [X]
+                                                    </button>
+                                                  </div>
+
+                                                  <div className="grid grid-cols-2 gap-2.5">
+                                                    <div>
+                                                      <label className="block text-[8px] font-bold text-zinc-400 uppercase mb-1">Match Status</label>
+                                                      <select
+                                                        value={editingMatchStatus}
+                                                        onChange={(e) => setEditingMatchStatus(e.target.value as any)}
+                                                        className="w-full bg-zinc-900 border border-zinc-800 text-[10px] font-mono px-2 py-1.5 text-zinc-300 focus:outline-none focus:border-rose-500/50 rounded-lg"
+                                                      >
+                                                        <option value="pending">Pending</option>
+                                                        <option value="live">Live</option>
+                                                        <option value="completed">Completed</option>
+                                                        <option value="disputed">Disputed ⚠️</option>
+                                                      </select>
+                                                    </div>
+
+                                                    <div>
+                                                      <label className="block text-[8px] font-bold text-zinc-400 uppercase mb-1">Assign Winner</label>
+                                                      <select
+                                                        value={editingMatchWinnerId || ''}
+                                                        onChange={(e) => setEditingMatchWinnerId(e.target.value || null)}
+                                                        disabled={p1Name === 'BYE' && p2Name === 'BYE'}
+                                                        className="w-full bg-zinc-900 border border-zinc-800 text-[10px] font-mono px-2 py-1.5 text-zinc-300 focus:outline-none focus:border-rose-500/50 rounded-lg disabled:opacity-40"
+                                                      >
+                                                        <option value="">No Winner Set</option>
+                                                        {p1Id && <option value={p1Id}>{p1Name}</option>}
+                                                        {p2Id && <option value={p2Id}>{p2Name}</option>}
+                                                      </select>
+                                                    </div>
+                                                  </div>
+
+                                                  <div className="grid grid-cols-1 gap-2.5">
+                                                    <div>
+                                                      <label className="block text-[8px] font-bold text-zinc-400 uppercase mb-1">Verdict Notes</label>
+                                                      <textarea
+                                                        value={editingMatchNotes}
+                                                        onChange={(e) => setEditingMatchNotes(e.target.value)}
+                                                        placeholder="Enter match highlights or dispute resolution notes..."
+                                                        rows={2}
+                                                        className="w-full bg-zinc-900 border border-zinc-800 text-[9.5px] font-mono p-2 text-zinc-300 focus:outline-none focus:border-rose-500/50 rounded-lg resize-none"
+                                                      />
+                                                    </div>
+
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                                      <div>
+                                                        <label className="block text-[8px] font-bold text-zinc-400 uppercase mb-1">Final Score</label>
+                                                        <input
+                                                          type="text"
+                                                          value={editingMatchScore}
+                                                          onChange={(e) => setEditingMatchScore(e.target.value)}
+                                                          placeholder="e.g., 2-1 or 150-120"
+                                                          className="w-full bg-zinc-900 border border-zinc-800 text-[10px] font-mono px-2.5 py-1.5 text-zinc-300 focus:outline-none focus:border-rose-500/50 rounded-lg"
+                                                        />
+                                                      </div>
+
+                                                      <div>
+                                                        <label className="block text-[8px] font-bold text-zinc-400 uppercase mb-1">Upload Proof</label>
+                                                        <div className="relative">
+                                                          <input
+                                                            type="file"
+                                                            accept="image/*"
+                                                            onChange={handleMatchScreenshotFileChange}
+                                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                          />
+                                                          <div className="w-full bg-zinc-900 border border-dashed border-zinc-800 hover:border-zinc-700 rounded-lg py-1.5 px-2 text-center text-zinc-500 font-mono text-[8.5px] flex items-center justify-center gap-1">
+                                                            <Upload className="w-3 h-3 text-zinc-650" />
+                                                            {uploadingMatchScreenshot ? "Uploading..." : "Click to select proof"}
+                                                          </div>
+                                                        </div>
+                                                      </div>
+                                                    </div>
+
+                                                    {editingMatchScreenshot && (
+                                                      <div className="flex items-center gap-2 bg-zinc-900/50 border border-zinc-850 p-1.5 rounded-lg">
+                                                        <img 
+                                                          src={editingMatchScreenshot} 
+                                                          alt="Preview" 
+                                                          className="w-10 h-10 object-cover rounded-md border border-zinc-800" 
+                                                        />
+                                                        <div className="flex-1 overflow-hidden">
+                                                          <span className="text-[7.5px] text-zinc-500 block uppercase font-sans">SCREENSHOT PROOF:</span>
+                                                          <span className="text-[8.5px] text-cyan-400 truncate block">{editingMatchScreenshot.substring(0, 35)}...</span>
+                                                        </div>
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => setEditingMatchScreenshot('')}
+                                                          className="text-rose-400 hover:text-rose-500 font-bold px-1 text-[9px]"
+                                                        >
+                                                          [X]
+                                                        </button>
+                                                      </div>
+                                                    )}
+                                                  </div>
+
+                                                  <div className="flex gap-2 pt-1 font-bold">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => handleSaveMatchOutcome(match, t.id)}
+                                                      disabled={isUpdatingMatchStatus === match.id}
+                                                      className="flex-1 bg-rose-500 hover:bg-rose-600 text-white font-mono uppercase tracking-wider text-[9px] py-1.5 rounded-lg transition-all cursor-pointer disabled:opacity-45"
+                                                    >
+                                                      {isUpdatingMatchStatus === match.id ? "Saving..." : "💾 Save & Progress"}
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setEditingMatchId(null)}
+                                                      className="px-3 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-855 text-[9px] py-1.5 rounded-lg transition-all"
+                                                    >
+                                                      Cancel
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              )}
+
+                                              {/* Grand Finale declare winner banner */}
+                                              {roundNum === totalRounds && match.status === 'completed' && winnerId && t.status !== 'completed' && (
+                                                <div className="pt-2 border-t border-zinc-900/80">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleDeclareChampion(t.id, winnerId)}
+                                                    className="w-full bg-amber-500 hover:bg-amber-600 text-zinc-950 hover:text-black font-sans font-black text-[9px] tracking-widest uppercase py-1.5 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 animate-bounce"
+                                                  >
+                                                    🏆 Declare Tournament Champion
+                                                  </button>
+                                                </div>
+                                              )}
                                             </div>
                                           );
                                         })}
@@ -3607,59 +4425,76 @@ export default function AdminPanel({
               {/* Pending Approvals Queue */}
               <div className="bg-zinc-950/40 p-5 rounded-2xl border border-zinc-850 space-y-4">
                 <h4 className="font-extrabold text-white flex items-center gap-1.5 uppercase text-[11px] tracking-wider text-rose-450">
-                  ⌛ Pending QR Scanning Approvals ({diamondTransactions.filter(t => t.status === 'pending').length})
+                  ⌛ Pending QR Scanning Approvals ({diamondTransactions.filter(t => t.status === 'pending' && t.transaction_type === 'topup_purchase').length})
                 </h4>
 
-                <div className="space-y-3 max-h-[290px] overflow-y-auto pr-1">
-                  {diamondTransactions.filter(t => t.status === 'pending').length === 0 ? (
+                <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                  {diamondTransactions.filter(t => t.status === 'pending' && t.transaction_type === 'topup_purchase').length === 0 ? (
                     <div className="text-center py-10 text-zinc-550">
-                      <p className="font-sans italic font-normal">All scanner upload transactions stand processed.</p>
+                      <p className="font-sans italic font-normal">All pending top-up purchase transactions stand processed.</p>
                     </div>
                   ) : (
-                    diamondTransactions.filter(t => t.status === 'pending').map((txn: any) => {
+                    diamondTransactions.filter(t => t.status === 'pending' && t.transaction_type === 'topup_purchase').map((txn: any) => {
                       const payee = users.find(u => u.id === txn.user_id);
                       return (
-                        <div key={txn.id} className="p-3.5 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2.5">
-                          <div className="flex justify-between items-start">
+                        <div key={txn.id} className="p-4 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2.5">
+                          <div className="flex justify-between items-start border-b border-zinc-800/60 pb-2">
                             <div>
                               <span className="font-bold text-white block text-[11.5px]">{payee?.gamerName || 'Unknown Player'}</span>
-                              <span className="text-[9px] text-zinc-550 font-sans block">{payee?.email}</span>
+                              <span className="text-[10px] text-zinc-400 font-sans block select-all">{payee?.email || 'N/A'}</span>
                             </div>
-                            <span className="text-emerald-400 font-black text-xs font-mono">
-                              +{txn.total_credited || txn.total_amount || txn.diamonds} 💎
-                            </span>
+                            <div className="text-right">
+                              <span className="text-emerald-400 font-black text-xs font-mono block">
+                                +{txn.total_credited || txn.total_amount || txn.diamonds} 💎
+                              </span>
+                              <span className="text-[8px] text-zinc-500 uppercase font-bold tracking-wider">TOTAL MICRO-CREDIT</span>
+                            </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-2 text-[9.5px] border-t border-zinc-800/40 pt-2 text-zinc-450">
-                            <p>Price: <span className="text-white font-bold font-sans">₹{txn.price_paid}</span></p>
-                            <p>UTR: <span className="text-white font-mono">{txn.transaction_id || 'N/A'}</span></p>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[10px] text-zinc-400 font-mono">
+                            <div>
+                              <p className="text-[9px] text-zinc-550 font-bold">BASE DIAMONDS:</p>
+                              <p className="text-white font-black">{txn.diamonds} 💎</p>
+                            </div>
+                            <div>
+                              <p className="text-[9px] text-zinc-550 font-bold font-sans">CALCULATED BONUS (+5%):</p>
+                              <p className="text-amber-500 font-black">+{txn.bonus || 0} 💎</p>
+                            </div>
+                            <div>
+                              <p className="text-[9px] text-zinc-550 font-bold font-sans">PRICE CHARGED:</p>
+                              <p className="text-yellow-500 font-black font-sans">₹{txn.price_paid} INR</p>
+                            </div>
+                            <div>
+                              <p className="text-[9px] text-zinc-550 font-bold">UTR REF REFERENCE:</p>
+                              <p className="text-cyan-400 font-black select-all">{txn.transaction_id || 'N/A'}</p>
+                            </div>
                           </div>
 
                           {txn.payment_screenshot_url && (
-                            <div className="p-1 px-1.5 bg-zinc-950 rounded text-center border border-zinc-800">
+                            <div className="p-1.5 bg-zinc-950 rounded text-center border border-zinc-850 mt-1">
                               <a
                                 href={txn.payment_screenshot_url}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="text-[9px] text-cyan-400 font-bold hover:underline inline-flex items-center gap-1 select-none font-mono uppercase"
+                                className="text-[9.5px] text-cyan-400 font-bold hover:underline inline-flex items-center gap-1 select-none font-mono uppercase"
                               >
-                                <Eye className="w-3 h-3" /> View Deposit Receipt Image
+                                <Eye className="w-3.5 h-3.5" /> View Uploaded Screenshot Proof
                               </a>
                             </div>
                           )}
 
-                          <div className="flex gap-2 pt-1">
+                          <div className="flex gap-2 pt-1 border-t border-zinc-800/40">
                             <button
                               type="button"
                               onClick={() => handleApproveDiamondTxn(txn.id)}
-                              className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-[9px] uppercase tracking-wide cursor-pointer transition flex items-center justify-center gap-1 border border-emerald-500/10"
+                              className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-[9.5px] uppercase tracking-wide cursor-pointer transition flex items-center justify-center gap-1 border border-emerald-500/10"
                             >
-                              <Check className="w-3.5 h-3.5" /> Credit Diamonds
+                              <Check className="w-3.5 h-3.5" /> Approve & Credit
                             </button>
                             <button
                               type="button"
                               onClick={() => handleRejectDiamondTxn(txn.id)}
-                              className="py-1.5 px-3 bg-zinc-950 hover:bg-rose-955 text-rose-450 hover:text-white font-bold rounded text-[9px] uppercase cursor-pointer transition border border-zinc-800 hover:border-rose-900"
+                              className="py-1.5 px-3 bg-zinc-950 hover:bg-rose-950 text-rose-450 hover:text-white font-bold rounded text-[9.5px] uppercase cursor-pointer transition border border-zinc-800 hover:border-rose-900"
                             >
                               Reject Txn
                             </button>
@@ -3964,6 +4799,296 @@ export default function AdminPanel({
           </div>
         )}
       </div>
+
+      {/* View Registered Players Modal */}
+      <AnimatePresence>
+        {viewPlayersTourneyId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+              onClick={() => setViewPlayersTourneyId(null)}
+            />
+
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-2xl p-6 z-10 space-y-4 shadow-xl max-h-[85vh] overflow-y-auto"
+            >
+              <div className="flex justify-between items-center pb-3 border-b border-zinc-800">
+                <div>
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono">
+                    Registered Players List
+                  </h3>
+                  <p className="text-[10px] text-zinc-550 mt-1">
+                    TOURNAMENT IDENTIFICATION ID: <span className="font-mono text-zinc-400">{viewPlayersTourneyId}</span>
+                  </p>
+                </div>
+                <button
+                  onClick={() => setViewPlayersTourneyId(null)}
+                  className="px-3 py-1 bg-zinc-950 hover:bg-zinc-850 text-zinc-400 hover:text-white rounded border border-zinc-800 text-xs font-mono transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+
+              {(() => {
+                const tourney = tournaments.find(t => t.id === viewPlayersTourneyId);
+                const getSeatNumber = (reg: DbTournamentRegistration) => {
+                  if (reg.payment_screenshot_url?.startsWith('seat:')) {
+                    const match = reg.payment_screenshot_url.match(/seat:(\d+)/);
+                    if (match) {
+                      return parseInt(match[1], 10);
+                    }
+                  }
+                  if (typeof (reg as any).seat_number === 'number') {
+                    return (reg as any).seat_number;
+                  }
+                  return 9999;
+                };
+
+                const playersRegs = (registrations || [])
+                  .filter(reg => reg.tournament_id === viewPlayersTourneyId && (((reg.status as string) === 'registered') || reg.status === 'approved'))
+                  .sort((a, b) => getSeatNumber(a) - getSeatNumber(b));
+
+                return (
+                  <div className="space-y-4">
+                    {tourney && (
+                      <div className="bg-zinc-950/80 p-3.5 rounded-xl border border-zinc-850/60 flex justify-between items-center text-xs font-mono">
+                        <div>
+                          <p className="text-zinc-500 text-[9px] uppercase tracking-wider">EVENT DESCRIPTION</p>
+                          <p className="text-white font-extrabold text-xs mt-0.5">{tourney.title}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-zinc-500 text-[9px] uppercase tracking-wider font-bold">TOTAL SEATS FILLED</p>
+                          <p className="text-emerald-400 font-black text-xs mt-0.5">
+                            {playersRegs.length} / {tourney.max_teams || 16} Players
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {playersRegs.length === 0 ? (
+                      <p className="py-12 text-center text-zinc-500 font-mono text-xs italic">
+                        No active registered players located under this bracket.
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-[11px] border-collapse font-sans">
+                          <thead>
+                            <tr className="border-b border-zinc-800 text-zinc-505 font-mono text-[9px] uppercase">
+                              <th className="py-2 px-3 pl-1">Seat</th>
+                              <th className="py-2 px-3">Gamer Name</th>
+                              <th className="py-2 px-2">Account Email</th>
+                              <th className="py-2 px-2">Squad Association</th>
+                              <th className="py-2 px-2 text-right pr-1">Registration Date</th>
+                              <th className="py-2 px-2 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-zinc-850/55">
+                            {playersRegs.map((reg) => {
+                              const user = users.find(u => u.id === reg.user_id);
+                              const gamerNameToShow = user?.gamerName || user?.username || 'Unknown';
+                              const emailToShow = user?.email || 'Unknown';
+                              const seat = getSeatNumber(reg);
+
+                              const getTeamNameLocal = (tId: string) => {
+                                const matchedTeam = teams.find(ti => ti.id === tId);
+                                return matchedTeam ? matchedTeam.name : 'Unknown Squadron';
+                              };
+
+                              return (
+                                <tr key={reg.id} className="hover:bg-zinc-950/40 text-zinc-350">
+                                  <td className="py-2.5 px-3 pl-1 font-mono text-emerald-400 font-black">
+                                    Slot #{seat === 9999 ? 'N/A' : seat}
+                                  </td>
+                                  <td className="py-2.5 px-3 text-white font-bold">
+                                    {gamerNameToShow}
+                                  </td>
+                                  <td className="py-2.5 px-2 font-mono text-zinc-400 text-[10px]">
+                                    {emailToShow}
+                                  </td>
+                                  <td className="py-2.5 px-2">
+                                    {reg.team_id ? (
+                                      <span className="text-cyan-400 font-mono text-[10px] bg-cyan-950/30 px-1.5 py-0.5 rounded border border-cyan-900/30">
+                                        {getTeamNameLocal(reg.team_id)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-zinc-500 italic font-mono text-[9.5px]">Solo</span>
+                                    )}
+                                  </td>
+                                  <td className="py-2.5 px-2 text-right pr-1 font-mono text-zinc-500 text-[10px]">
+                                    {new Date(reg.registered_at).toLocaleString()}
+                                  </td>
+                                  <td className="py-2.5 px-2 text-right">
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        if (window.confirm(`Are you sure you want to remove player ${gamerNameToShow} from seat Slot #${seat === 9999 ? 'N/A' : seat}?`)) {
+                                          if (onAdminRemoveRegistrationStatus) {
+                                            await onAdminRemoveRegistrationStatus(reg.id);
+                                          }
+                                        }
+                                      }}
+                                      className="bg-rose-950/20 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 px-2 py-1 text-[9px] font-mono leading-none rounded cursor-pointer transition-all uppercase font-bold"
+                                    >
+                                      Remove
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Declare Champion Modal Popup */}
+      <AnimatePresence>
+        {declaringTourneyId && (() => {
+          const t = tournaments.find(x => x.id === declaringTourneyId);
+          if (!t) return null;
+          const regTypeObj = t.registrationType || 'solo';
+          const approvedRegs = (registrations || []).filter(r => r.tournament_id === t.id && r.status === 'approved');
+
+          return (
+            <div className="fixed inset-0 z-[2000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                className="bg-zinc-950 border border-zinc-850 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-2xl font-mono text-xs relative select-none text-left"
+              >
+                <button
+                  type="button"
+                  onClick={() => setDeclaringTourneyId(null)}
+                  className="absolute top-4 right-4 text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-800 rounded-full w-7 h-7 flex items-center justify-center text-xs cursor-pointer"
+                >
+                  ✕
+                </button>
+
+                <div className="border-b border-zinc-900 pb-2">
+                  <span className="text-[9px] text-amber-500 font-bold uppercase tracking-wider block">ARENA DECISION ENGINE</span>
+                  <h4 className="text-sm font-extrabold text-white text-wrap">Declare Winner & Champion Badge</h4>
+                  <p className="text-[10px] text-zinc-555 mt-0.5 font-sans">Tournament: {t.title}</p>
+                </div>
+
+                <div className="space-y-3">
+                  {/* Winner Selector */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] text-zinc-500 uppercase font-extrabold">
+                      Select Winner from Registrations ({regTypeObj === 'solo' ? 'Gamers' : 'Teams'})
+                    </label>
+                    <select
+                      className="w-full bg-zinc-900 border border-zinc-800 text-white rounded px-2.5 py-1.5 focus:outline-none focus:border-amber-500 text-xs"
+                      value={declaringWinnerId}
+                      onChange={e => setDeclaringWinnerId(e.target.value)}
+                    >
+                      <option value="">-- Choose Registrant --</option>
+                      {approvedRegs.map(r => {
+                        const idVal = regTypeObj === 'solo' ? r.user_id : r.team_id;
+                        const nameVal = regTypeObj === 'solo' 
+                          ? getParticipantName(r.user_id, 'solo') 
+                          : getParticipantName(r.team_id, 'team');
+                        if (!idVal) return null;
+                        return (
+                          <option key={r.id} value={idVal}>
+                            {nameVal} (id: {idVal.substring(0, 8)})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  {/* Manual User Lookup Override */}
+                  <div className="p-3 bg-zinc-950 border border-zinc-900 rounded-lg space-y-2">
+                    <p className="text-[9.5px] text-zinc-400 font-extrabold uppercase">Manual System Override Selection</p>
+                    <div className="space-y-1">
+                      <label className="block text-[9px] text-zinc-550 lowercase">or choose ANY registered system user:</label>
+                      <select
+                        className="w-full bg-zinc-955 border border-zinc-800 text-white rounded px-2 py-1 focus:outline-none focus:border-amber-500 text-[11px]"
+                        value={declaringWinnerId}
+                        onChange={e => setDeclaringWinnerId(e.target.value)}
+                      >
+                        <option value="">-- Manual System User Picker --</option>
+                        {users.map(u => (
+                          <option key={u.id} value={u.id}>
+                            {u.gamerName || u.username || u.email} ({u.role || 'Member'})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Prize Diamonds */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] text-zinc-500 uppercase font-extrabold">
+                      Prize Diamonds to Credit (Vault Wallet) *
+                    </label>
+                    <input
+                      type="number"
+                      className="w-full bg-zinc-900 border border-zinc-800 text-white rounded px-2.5 py-1.5 focus:outline-none focus:border-amber-500 font-mono text-xs"
+                      value={declaringPrizeAmount}
+                      onChange={e => setDeclaringPrizeAmount(Math.max(0, Number(e.target.value)))}
+                    />
+                    <p className="text-[8px] text-zinc-500 font-sans mt-0.5">
+                      Will be paid directly to user winning_diamonds (never topup).
+                    </p>
+                  </div>
+
+                  {/* Optional Note */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] text-zinc-500 uppercase font-extrabold">
+                      Optional Note for Payout Transaction
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full bg-zinc-900 border border-zinc-800 text-white rounded px-2.5 py-1.5 focus:outline-none focus:border-amber-500 text-xs"
+                      placeholder="e.g. Winner of Esports Finals"
+                      value={declaringNote}
+                      onChange={e => setDeclaringNote(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-3 border-t border-zinc-900">
+                  <button
+                    type="button"
+                    onClick={() => setDeclaringTourneyId(null)}
+                    className="px-3.5 py-1.5 bg-zinc-900 hover:bg-zinc-850 text-zinc-400 rounded-lg text-xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!declaringWinnerId) {
+                        addToast("Please select a winner first!", "warning");
+                        return;
+                      }
+                      await handleDeclareChampion(t.id, declaringWinnerId, declaringPrizeAmount, declaringNote);
+                      setDeclaringTourneyId(null);
+                    }}
+                    className="px-4 py-1.5 bg-amber-500 hover:bg-amber-600 text-black font-extrabold rounded-lg text-xs transition-colors cursor-pointer"
+                  >
+                    Confirm & Declare Champion
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
+      </AnimatePresence>
     </div>
   );
 }
