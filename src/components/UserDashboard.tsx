@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbTournamentRegistration, DbTournamentMatch, TournamentResult } from '../types';
+import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbTournamentRegistration, DbTournamentMatch, TournamentResult, SubscriptionCancellationRequest } from '../types';
 import { User, Shield, Trophy, Users, Heart, Award, Sparkles, Bell, CreditCard, Gift, Save, Send, Trash, Edit2, Gamepad2, Info, Check, Copy, MessageSquare, Receipt, Play, Eye, Star, X, MapPin, UserPlus, FileText, Rss, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getUserProfileFrameClass, getUserProfileBannerStyle, getUserTierBadgeIcon, getUserNameColorClass, isUserVIP, getThemePackAssetUrl, PLATINUM_DEFAULTS } from '../lib/premiumUtils';
@@ -165,7 +165,7 @@ export default function UserDashboard({
     } as typeof rawCurrentUser;
   }, [rawCurrentUser]);
 
-   const [activeTab, setActiveTab ] = useState<'profile' | 'teams' | 'tournaments' | 'payments' | 'membership' | 'badges' | 'messages' | 'notifications' | 'favorites' | 'platinum_theme' | 'friends' | 'friend_requests' | 'posts' | 'feed' | 'diamonds'>('profile');
+   const [activeTab, setActiveTab ] = useState<'profile' | 'teams' | 'tournaments' | 'payments' | 'membership' | 'badges' | 'messages' | 'notifications' | 'favorites' | 'platinum_theme' | 'friends' | 'friend_requests' | 'posts' | 'feed' | 'diamonds' | 'verification' | 'advertisement' | 'invoices'>('profile');
   const [showPlatinumPreview, setShowPlatinumPreview] = useState(false);
   const isPlatinum = 
     (currentUser?.membership?.toLowerCase() === 'platinum' && currentUser?.membershipStatus?.toLowerCase() === 'active') || 
@@ -201,6 +201,38 @@ export default function UserDashboard({
   const [withdrawNote, setWithdrawNote] = useState('');
   const [withdrawQrUrl, setWithdrawQrUrl] = useState('');
   const [isSubmittingWithdraw, setIsSubmittingWithdraw] = useState(false);
+
+  // Subscription Cancellation States
+  const [isCancelSubOpen, setIsCancelSubOpen] = useState(false);
+  const [cancelUpiId, setCancelUpiId] = useState('');
+  const [cancelQrUrl, setCancelQrUrl] = useState('');
+  const [cancelReason, setCancelReason] = useState('');
+  const [isSubmittingCancelSub, setIsSubmittingCancelSub] = useState(false);
+  const [userCancellationRequests, setUserCancellationRequests] = useState<SubscriptionCancellationRequest[]>([]);
+
+  // --- Creator Verification, Ad Marketplace, and Invoices ---
+  const [verificationRealName, setVerificationRealName] = useState('');
+  const [verificationCreatorName, setVerificationCreatorName] = useState('');
+  const [verificationYoutube, setVerificationYoutube] = useState('');
+  const [verificationInstagram, setVerificationInstagram] = useState('');
+  const [verificationDiscord, setVerificationDiscord] = useState('');
+  const [verificationUid, setVerificationUid] = useState('');
+  const [verificationDescription, setVerificationDescription] = useState('');
+  const [verificationProofUrl, setVerificationProofUrl] = useState('');
+  const [verificationType, setVerificationType] = useState<'Streamer' | 'Player' | 'Team' | 'Organization'>('Streamer');
+  const [myVerificationsList, setMyVerificationsList] = useState<any[]>([]);
+  const [isSubmittingVerification, setIsSubmittingVerification] = useState(false);
+
+  const [adOrderType, setAdOrderType] = useState<'profile' | 'team' | 'tournament'>('profile');
+  const [adOrderTargetId, setAdOrderTargetId] = useState('');
+  const [adOrderBannerUrl, setAdOrderBannerUrl] = useState('');
+  const [adOrderPlan, setAdOrderPlan] = useState<'1_day' | '7_days' | '30_days'>('1_day');
+  const [adOrderTxId, setAdOrderTxId] = useState('');
+  const [adOrderScreenshotUrl, setAdOrderScreenshotUrl] = useState('');
+  const [myAdOrders, setMyAdOrders] = useState<any[]>([]);
+  const [isSubmittingAdOrder, setIsSubmittingAdOrder] = useState(false);
+
+  const [myInvoices, setMyInvoices] = useState<any[]>([]);
 
   const getParticipantGlobalName = (id: string | null | undefined, type: 'solo' | 'team') => {
     if (!id) return "BYE";
@@ -307,15 +339,265 @@ export default function UserDashboard({
     }
   };
 
+  const [userReferrals, setUserReferrals] = useState<any[]>([]);
+  const [isReferralsLoading, setIsReferralsLoading] = useState(false);
+
+  const fetchUserReferrals = async () => {
+    if (!currentUser?.id) return;
+    setIsReferralsLoading(true);
+    try {
+      const allRef = await supabaseService.getReferrals();
+      const filtered = allRef.filter((r: any) => r.referrer_user_id === currentUser.id || r.referred_user_id === currentUser.id);
+      setUserReferrals(filtered);
+    } catch (err) {
+      console.error("Failed to fetch referrals:", err);
+    } finally {
+      setIsReferralsLoading(false);
+    }
+  };
+
+  const fetchUserCancellationRequests = async () => {
+    try {
+      if (!currentUser?.id) return;
+      const allC = await supabaseService.getSubscriptionCancellations();
+      const filtered = allC.filter((c: any) => c.user_id === currentUser.id);
+      setUserCancellationRequests(filtered);
+    } catch (err) {
+      console.error("Failed to load user cancellations:", err);
+    }
+  };
+
+  const fetchUserVerifications = async () => {
+    if (!currentUser?.id) return;
+    try {
+      const all = await supabaseService.getCreatorVerificationRequests();
+      const filtered = all.filter(x => x.user_id === currentUser.id);
+      setMyVerificationsList(filtered);
+    } catch (e) {
+      console.error("Failed to load user verifications:", e);
+    }
+  };
+
+  const fetchUserAdOrders = async () => {
+    if (!currentUser?.id) return;
+    try {
+      const all = await supabaseService.getAdvertisementOrders();
+      const filtered = all.filter(x => x.user_id === currentUser.id);
+      setMyAdOrders(filtered);
+    } catch (e) {
+      console.error("Failed to load user ad orders:", e);
+    }
+  };
+
+  const fetchUserInvoices = async () => {
+    if (!currentUser?.id) return;
+    try {
+      const all = await supabaseService.getInvoices();
+      const filtered = all.filter(x => x.user_id === currentUser.id);
+      setMyInvoices(filtered);
+    } catch (e) {
+      console.error("Failed to load user invoices:", e);
+    }
+  };
+
+  const handleVerificationSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser?.id) return;
+    if (!verificationRealName.trim() || !verificationCreatorName.trim() || !verificationDescription.trim()) {
+      addToast("Real name, creator name, and application statement description are required!", "warning");
+      return;
+    }
+
+    setIsSubmittingVerification(true);
+    try {
+      await supabaseService.submitCreatorVerificationRequest({
+        user_id: currentUser.id,
+        real_name: verificationRealName,
+        creator_name: verificationCreatorName,
+        type: verificationType,
+        youtube_link: verificationYoutube || undefined,
+        instagram_link: verificationInstagram || undefined,
+        discord_link: verificationDiscord || undefined,
+        uid: verificationUid || undefined,
+        description_text: verificationDescription,
+        proof_url: verificationProofUrl || "Not Provided",
+      });
+
+      addToast("Creator Verification Application submitted successfully! Admin will review details.", "success");
+      
+      // Clear forms
+      setVerificationRealName('');
+      setVerificationCreatorName('');
+      setVerificationYoutube('');
+      setVerificationInstagram('');
+      setVerificationDiscord('');
+      setVerificationUid('');
+      setVerificationDescription('');
+      setVerificationProofUrl('');
+
+      fetchUserVerifications();
+    } catch (err: any) {
+      addToast(err.message || "Failed to submit verification request", "error");
+    } finally {
+      setIsSubmittingVerification(false);
+    }
+  };
+
+  const handleAdOrderSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser?.id) return;
+    if (!adOrderBannerUrl.trim()) {
+      addToast("Ad Banner Image URL / Proof is required!", "warning");
+      return;
+    }
+    if (!adOrderTxId.trim()) {
+      addToast("UPI Payment Transaction UTR is required!", "warning");
+      return;
+    }
+
+    setIsSubmittingAdOrder(true);
+    try {
+      // Calculate amount based on plan
+      let amount = 199;
+      let duration = 1;
+      if (adOrderPlan === '7_days') {
+        amount = 899;
+        duration = 7;
+      } else if (adOrderPlan === '30_days') {
+        amount = 2999;
+        duration = 30;
+      }
+
+      // Create direct ad order
+      const order = await supabaseService.createAdvertisementOrder({
+        user_id: currentUser.id,
+        ad_type: adOrderType,
+        target_id: adOrderTargetId.trim() || currentUser.id,
+        banner_url: adOrderBannerUrl,
+        plan: adOrderPlan,
+        amount: amount,
+        payment_screenshot_url: adOrderScreenshotUrl || "",
+        transaction_id: adOrderTxId
+      });
+
+      // Submit automatic invoice
+      await supabaseService.createInvoice({
+        user_id: currentUser.id,
+        amount: amount,
+        status: 'unpaid',
+        description: `Self Advertisement Banner (Plan: ${adOrderPlan.toUpperCase()}, Type: ${adOrderType.toUpperCase()}, Promote ID: ${adOrderTargetId.trim() || currentUser.id}). UTR: ${adOrderTxId}`,
+        item_type: 'advertisement_purchase',
+        billing_name: currentUser.gamerName,
+        billing_email: currentUser.email || ''
+      });
+
+      addToast("Self-Advertisement order & invoice generated successfully! Admin approval pending.", "success");
+
+      // Reset
+      setAdOrderBannerUrl('');
+      setAdOrderTxId('');
+      setAdOrderScreenshotUrl('');
+      setAdOrderTargetId('');
+
+      fetchUserAdOrders();
+    } catch (err: any) {
+      addToast(err.message || "Failed to order self-advertisement banner.", "error");
+    } finally {
+      setIsSubmittingAdOrder(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'diamonds' && currentUser?.id) {
       fetchUserDiamondTransactions();
       fetchUserWithdrawals();
     }
+    if (activeTab === 'referrals' && currentUser?.id) {
+      fetchUserReferrals();
+      fetchUserDiamondTransactions();
+    }
+    if (activeTab === 'membership' && currentUser?.id) {
+      fetchUserCancellationRequests();
+    }
     if (activeTab === 'tournaments' && currentUser?.id) {
       fetchDashboardMatchesAndResults();
     }
+    if (activeTab === 'verification' && currentUser?.id) {
+      fetchUserVerifications();
+    }
+    if (activeTab === 'advertisement' && currentUser?.id) {
+      fetchUserAdOrders();
+    }
+    if (activeTab === 'invoices' && currentUser?.id) {
+      fetchUserInvoices();
+    }
   }, [activeTab, currentUser?.id]);
+
+  const handleCancelSubscriptionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    if (!cancelUpiId.trim() && !cancelQrUrl) {
+      alert("Please provide at least one payout return credential (UPI ID or QR code image upload) to route your return!");
+      return;
+    }
+
+    setIsSubmittingCancelSub(true);
+    try {
+      await supabaseService.createSubscriptionCancellation({
+        user_id: currentUser.id,
+        user_email: currentUser.email || '',
+        plan: currentUser.membership,
+        upi_id: cancelUpiId,
+        qr_url: cancelQrUrl || null,
+        reason: cancelReason
+      });
+      addToast("Subscription Cancellation request submitted. Admin will process shortly.", "success");
+      setIsCancelSubOpen(false);
+      setCancelUpiId('');
+      setCancelQrUrl('');
+      setCancelReason('');
+      fetchUserCancellationRequests();
+    } catch (err: any) {
+      addToast(err.message || "Failed to submit subscription cancellation", "error");
+    } finally {
+      setIsSubmittingCancelSub(false);
+    }
+  };
+
+  const handleApplyDiamondCoupon = async () => {
+    let basePrice = 0;
+    if (isCustomTopupOpen) {
+      basePrice = topupAmount;
+    } else if (selectedDiamondPackage) {
+      basePrice = selectedDiamondPackage.price;
+    } else {
+      addToast("Please select a package first!", "warning");
+      return;
+    }
+
+    const code = diamondCouponCode.trim().toUpperCase();
+    if (!code) {
+      addToast("Please input a valid promo or coupon code.", "warning");
+      return;
+    }
+
+    const res = await supabaseService.validatePromoCode(code, currentUser?.id || '', 'diamond_purchase', basePrice);
+    if (res.isValid) {
+      const original = basePrice;
+      const discount = res.discountAmount;
+      const final = res.finalAmount;
+      setDiamondDiscountSummary({
+        original,
+        discount,
+        final,
+        savings: discount
+      });
+      addToast(res.message, "success");
+    } else {
+      setDiamondDiscountSummary(null);
+      addToast(res.message, "error");
+    }
+  };
 
   const submitDiamondTopup = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -370,7 +652,18 @@ export default function UserDashboard({
       const paymentScreenshotUrl = diamondScreenshotUrl ? diamondScreenshotUrl.trim() : null;
 
       // 6. Calculate
-      const price_paid = diamonds;
+      const basePrice = isCustomTopupOpen ? topupAmount : (selectedDiamondPackage ? selectedDiamondPackage.price : diamonds);
+      let price_paid = basePrice;
+      let executedCouponCode: string | undefined = undefined;
+
+      if (diamondCouponCode.trim()) {
+        const promoRes = await supabaseService.executePromoUsage(diamondCouponCode.trim(), user.id, 'diamond_purchase', basePrice);
+        if (promoRes.status === 'success') {
+          price_paid = promoRes.finalAmount;
+          executedCouponCode = diamondCouponCode.trim().toUpperCase();
+        }
+      }
+
       const bonus = diamonds >= 100 ? Math.floor(diamonds * 0.05) : 0;
       const total_credited = diamonds + bonus;
 
@@ -381,6 +674,8 @@ export default function UserDashboard({
       if (isSupabaseConfigured) {
         localStorage.removeItem('gh_diamond_transactions');
       }
+
+      const topupNote = executedCouponCode ? `Diamond top-up request (Coupon: ${executedCouponCode})` : "Diamond top-up request";
 
       // 7. Insert to Supabase table
       if (isSupabaseConfigured && supabase) {
@@ -397,7 +692,7 @@ export default function UserDashboard({
             transaction_id: transactionId,
             payment_screenshot_url: paymentScreenshotUrl,
             status: "pending",
-            note: "Diamond top-up request"
+            note: topupNote
           });
 
         if (error) {
@@ -420,8 +715,23 @@ export default function UserDashboard({
           status: "pending",
           transaction_id: transactionId,
           payment_screenshot_url: paymentScreenshotUrl,
-          note: "Diamond top-up request"
+          note: topupNote
         });
+      }
+
+      // Generate invoice for diamond purchase
+      try {
+        await supabaseService.createInvoice({
+          user_id: user.id,
+          amount: price_paid,
+          status: 'unpaid',
+          description: `Diamonds packages purchased (Quantity: ${diamonds} + Info bonus ${bonus}). Coupon: ${executedCouponCode || 'None'}. UTR: ${transactionId}`,
+          item_type: 'diamond_purchase',
+          billing_name: user.gamerName,
+          billing_email: user.email || ''
+        });
+      } catch (e) {
+        console.error("Discount/Invoice system error: ", e);
       }
 
       // 8. Success actions
@@ -431,6 +741,8 @@ export default function UserDashboard({
       // Clear form states
       setDiamondTxId('');
       setDiamondScreenshotUrl('');
+      setDiamondCouponCode('');
+      setDiamondDiscountSummary(null);
       setIsCustomTopupOpen(false);
       setSelectedDiamondPackage(null);
 
@@ -768,6 +1080,31 @@ export default function UserDashboard({
   const [selectedPremiumTier, setSelectedPremiumTier] = useState<'Silver' | 'Gold' | 'Platinum' | null>(null);
   const [couponCode, setCouponCode] = useState('');
   const [appliedDiscount, setAppliedDiscount] = useState(0);
+  const [flatDeduction, setFlatDeduction] = useState(0);
+  const [discountSummary, setDiscountSummary] = useState<{
+    original: number;
+    discount: number;
+    final: number;
+    savings: number;
+  } | null>(null);
+
+  // Diamond purchase coupon states
+  const [diamondCouponCode, setDiamondCouponCode] = useState('');
+  const [diamondDiscountSummary, setDiamondDiscountSummary] = useState<{
+    original: number;
+    discount: number;
+    final: number;
+    savings: number;
+  } | null>(null);
+
+  // Tournament coupon states
+  const [tournamentCouponCode, setTournamentCouponCode] = useState('');
+  const [tournamentDiscountSummary, setTournamentDiscountSummary] = useState<{
+    original: number;
+    discount: number;
+    final: number;
+    savings: number;
+  } | null>(null);
   const [transactionId, setTransactionId] = useState('');
   const [screenshotInput, setScreenshotInput] = useState('');
 
@@ -825,18 +1162,44 @@ export default function UserDashboard({
     Platinum: { price: 99, badge: "👑 Platinum VIP badge", perks: ["Animated profile frame", "Animated premium banner", "VIP label everywhere", "Featured profile while active", "Platinum glow effect"] }
   };
 
-  const handleApplyCoupon = () => {
+  const handleApplyCoupon = async () => {
+    if (!selectedPremiumTier) {
+      addToast("Select a premium tier first so we can apply coupon context!", "warning");
+      return;
+    }
     const code = couponCode.trim().toUpperCase();
-    const coupon = adminSettings.activeCoupons.find(c => c.code === code);
-    if (coupon) {
-      setAppliedDiscount(coupon.discountPercent);
-      addToast(`Coupon "${code}" applied: ${coupon.discountPercent}% OFF!`, "success");
+    if (!code) {
+      addToast("Please input a valid promo or coupon code.", "warning");
+      return;
+    }
+    
+    const basePrice = premiumTiers[selectedPremiumTier].price;
+    const res = await supabaseService.validatePromoCode(code, currentUser?.id || '', 'membership', basePrice);
+    
+    if (res.isValid) {
+      setAppliedDiscount(res.promo?.discount_type === 'percentage' ? res.promo.discount_value : 0);
+      setFlatDeduction(res.promo?.discount_type === 'flat' ? res.promo.discount_value : 0);
+      
+      const original = basePrice;
+      const discount = res.discountAmount;
+      const final = res.finalAmount;
+      setDiscountSummary({
+        original,
+        discount,
+        final,
+        savings: discount
+      });
+      
+      addToast(res.message, "success");
     } else {
-      addToast("Invalid or expired discount code!", "error");
+      setAppliedDiscount(0);
+      setFlatDeduction(0);
+      setDiscountSummary(null);
+      addToast(res.message, "error");
     }
   };
 
-  const handlePaymentSubmit = (e: React.FormEvent) => {
+  const handlePaymentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPremiumTier) return;
     if (!transactionId.trim()) {
@@ -848,8 +1211,19 @@ export default function UserDashboard({
     const finalScreenshot = screenshotInput.trim() || "https://images.unsplash.com/photo-1595079676339-1534801ad6cf?w=500&auto=format&fit=crop&q=60";
 
     const basePrice = premiumTiers[selectedPremiumTier].price;
-    const finalAmount = basePrice - Math.floor((basePrice * appliedDiscount) / 100);
-    const finalCoupon = appliedDiscount > 0 ? couponCode.trim().toUpperCase() : undefined;
+    let finalAmount = basePrice;
+    let finalCoupon: string | undefined = undefined;
+
+    if (couponCode.trim()) {
+      const execRes = await supabaseService.executePromoUsage(couponCode.trim(), currentUser?.id || '', 'membership', basePrice);
+      if (execRes.status === 'success') {
+        finalAmount = execRes.finalAmount;
+        finalCoupon = couponCode.trim().toUpperCase();
+        console.log(`[Coupon Engine] Promo code executed successfully! Paid: ₹${finalAmount}`);
+      } else {
+        console.warn("[Coupon Engine] Promo code execution failed. Defaulting to full billing amount.");
+      }
+    }
 
     onConfirmPayment(
       selectedPremiumTier,
@@ -858,6 +1232,27 @@ export default function UserDashboard({
       finalAmount,
       finalCoupon
     );
+
+    // Generate Invoice record for Membership upgrade
+    try {
+      await supabaseService.createInvoice({
+        user_id: currentUser?.id || 'anonymous',
+        amount: finalAmount,
+        status: 'unpaid',
+        description: `Esports Premium Tier: ${selectedPremiumTier} Upgrade. Coupon: ${finalCoupon || 'None'}. UTR: ${transactionId}`,
+        item_type: 'membership',
+        billing_name: currentUser?.gamerName || 'Esports Athlete',
+        billing_email: currentUser?.email || ''
+      });
+    } catch (e) {
+      console.error("Invoice generation failed for membership", e);
+    }
+
+    // reset states
+    setCouponCode('');
+    setAppliedDiscount(0);
+    setFlatDeduction(0);
+    setDiscountSummary(null);
 
     addToast("Payment proof uploaded successfully! Awaiting verification approval from Gaming Admin.", "success");
     setTransactionId('');
@@ -1078,6 +1473,36 @@ export default function UserDashboard({
           </button>
 
           <button
+            onClick={() => setActiveTab('verification')}
+            className={`w-full px-4 py-3 rounded-xl flex items-center gap-2.5 transition-all justify-start ${
+              activeTab === 'verification' ? 'bg-zinc-800 text-blue-400 border-l-2 border-blue-500 font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-950/40'
+            }`}
+          >
+            <Shield className="w-4 h-4 shrink-0 text-blue-500" />
+            Creator badge verification
+          </button>
+
+          <button
+            onClick={() => setActiveTab('advertisement')}
+            className={`w-full px-4 py-3 rounded-xl flex items-center gap-2.5 transition-all justify-start ${
+              activeTab === 'advertisement' ? 'bg-zinc-800 text-rose-455 border-l-2 border-rose-500 font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-950/40'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 shrink-0 text-rose-450" />
+            Self Advertisement Marketplace
+          </button>
+
+          <button
+            onClick={() => setActiveTab('invoices')}
+            className={`w-full px-4 py-3 rounded-xl flex items-center gap-2.5 transition-all justify-start ${
+              activeTab === 'invoices' ? 'bg-zinc-800 text-emerald-450 border-l-2 border-emerald-500 font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-950/40'
+            }`}
+          >
+            <FileText className="w-4 h-4 shrink-0 text-emerald-400" />
+            My Invoice Ledger
+          </button>
+
+          <button
             onClick={() => setActiveTab('membership')}
             className={`w-full px-4 py-3 rounded-xl flex items-center gap-2.5 transition-all justify-start ${
               activeTab === 'membership' ? 'bg-zinc-800 text-amber-500 border-l-2 border-amber-500 font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-950/40'
@@ -1095,6 +1520,16 @@ export default function UserDashboard({
           >
             <Sparkles className="w-4 h-4 shrink-0 text-cyan-400 animate-pulse" />
             <span>Diamond Shop & Perks</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('referrals')}
+            className={`w-full px-4 py-3 rounded-xl flex items-center gap-2.5 transition-all justify-start ${
+              activeTab === 'referrals' ? 'bg-zinc-800 text-rose-450 border-l-2 border-rose-500 font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-950/40'
+            }`}
+          >
+            <Users className="w-4 h-4 shrink-0 text-rose-450" />
+            <span>Affiliate & Referrals Program</span>
           </button>
 
           <button
@@ -1191,8 +1626,12 @@ export default function UserDashboard({
           {activeTab === 'teams' && "My Squadron Command"}
           {activeTab === 'tournaments' && "Registered Tournaments Track"}
           {activeTab === 'payments' && "My Billing & Payments Desk"}
+          {activeTab === 'verification' && "🛡️ Creator Badge Verification Desk"}
+          {activeTab === 'advertisement' && "📢 Self-Advertisement Promotion Desk"}
+          {activeTab === 'invoices' && "📑 My Invoice Ledger & Receipts"}
           {activeTab === 'membership' && "Esports Premium Upgrades Desk"}
           {activeTab === 'diamonds' && "💎 Diamond Shop & Economy Portal"}
+          {activeTab === 'referrals' && "🤝 Affiliate Partnerships & Referrals Desk"}
           {activeTab === 'badges' && "My Certification Badges Chest"}
           {activeTab === 'messages' && "Tactical Chat Command Comms"}
           {activeTab === 'friends' && "My Friends Network"}
@@ -2704,6 +3143,503 @@ export default function UserDashboard({
             </div>
           )}
 
+          {activeTab === 'verification' && (
+            <div className="space-y-6">
+              <p className="text-xs text-zinc-400">Apply for exclusive badges, verified esports profiles, and dedicated visual markers across the directory.</p>
+
+              {/* Status Alert Badge */}
+              {myVerificationsList.length > 0 ? (
+                <div className="space-y-4">
+                  <h4 className="text-xs font-mono text-zinc-500 uppercase tracking-widest">Active Application Records</h4>
+                  <div className="space-y-3">
+                    {myVerificationsList.map(req => (
+                      <div key={req.id} className="p-4 bg-zinc-950/60 border border-zinc-800 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-white uppercase">{req.creator_name}</span>
+                            <span className="text-[9px] font-mono bg-zinc-900 border border-zinc-800 text-zinc-450 px-2 py-0.5 rounded uppercase">
+                              {req.creator_type}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-zinc-400 font-sans italic">"{req.description}"</p>
+                          {req.youtube_link && <p className="text-[10px] text-zinc-500 font-mono">YouTube: {req.youtube_link}</p>}
+                        </div>
+
+                        <div className="flex items-center gap-2 font-mono text-[10px]">
+                          <span className="text-zinc-500 uppercase">STATUS:</span>
+                          <span className={`px-2 py-1 rounded font-extrabold uppercase ${
+                            req.status === 'approved' ? 'text-emerald-400 bg-emerald-400/5' : 
+                            req.status === 'rejected' ? 'text-rose-400 bg-rose-400/5' : 'text-amber-400 bg-amber-400/5'
+                          }`}>
+                            {req.status}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {currentUser.is_verified ? (
+                <div className="p-5 text-center bg-blue-950/15 border border-blue-900/30 rounded-2xl space-y-2">
+                  <div className="w-12 h-12 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center mx-auto shadow-lg shadow-blue-500/10">
+                    <Check className="w-6 h-6 stroke-[3]" />
+                  </div>
+                  <h4 className="text-sm font-extrabold text-white">Your Creator Profile is Officially Verified!</h4>
+                  <p className="text-[11px] text-zinc-400 max-w-md mx-auto">
+                    You have unlocked your special Blue Verification Badge, custom profile overlay accent, and elevated ranking metrics visibility globally.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-5 bg-zinc-950/40 border border-zinc-800/80 rounded-2xl space-y-4">
+                  <h3 className="text-xs font-mono font-bold uppercase tracking-widest text-blue-400">Creator Verification Pitch Form</h3>
+                  <form onSubmit={handleVerificationSubmit} className="space-y-4 font-mono text-xs">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-500 block uppercase">Your Legal Real Name *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. Priyanshu Kumar"
+                          value={verificationRealName}
+                          onChange={(e) => setVerificationRealName(e.target.value)}
+                          className="w-full bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800 focus:border-zinc-700 text-zinc-200"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-500 block uppercase">Gamer/Team/Brand Handle *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. Zephyr Esports"
+                          value={verificationCreatorName}
+                          onChange={(e) => setVerificationCreatorName(e.target.value)}
+                          className="w-full bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800 focus:border-zinc-700 text-zinc-200"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-500 block uppercase">Verification Badge Tier *</label>
+                        <select
+                          value={verificationType}
+                          onChange={(e) => setVerificationType(e.target.value as any)}
+                          className="w-full bg-zinc-950/85 p-2.5 rounded-xl border border-zinc-800 text-zinc-300"
+                        >
+                          <option value="Streamer">Verified Streamer Badge</option>
+                          <option value="Player">Verified Esports Athlete</option>
+                          <option value="Team">Verified Pro Esports Squad</option>
+                          <option value="Organization">Verified Guild / Org</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-500 block uppercase">UID / Game ID (Optional)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. UID-881518"
+                          value={verificationUid}
+                          onChange={(e) => setVerificationUid(e.target.value)}
+                          className="w-full bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800 text-zinc-200"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-500 block uppercase">YouTube channel (Optional)</label>
+                        <input
+                          type="url"
+                          placeholder="https://youtube.com/@handle"
+                          value={verificationYoutube}
+                          onChange={(e) => setVerificationYoutube(e.target.value)}
+                          className="w-full bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800 text-zinc-200 text-[11px]"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-500 block uppercase">Instagram profile (Optional)</label>
+                        <input
+                          type="url"
+                          placeholder="https://instagram.com/handle"
+                          value={verificationInstagram}
+                          onChange={(e) => setVerificationInstagram(e.target.value)}
+                          className="w-full bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800 text-zinc-200 text-[11px]"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-500 block uppercase">Discord Server / ID (Optional)</label>
+                        <input
+                          type="text"
+                          placeholder="discord.gg/invite"
+                          value={verificationDiscord}
+                          onChange={(e) => setVerificationDiscord(e.target.value)}
+                          className="w-full bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800 text-zinc-200 text-[11px]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-zinc-500 block uppercase">Application statement *</label>
+                      <textarea
+                        required
+                        rows={3}
+                        placeholder="Detail your professional records, active subscriber handles, team achievements, or corporate sponsors affiliations description..."
+                        value={verificationDescription}
+                        onChange={(e) => setVerificationDescription(e.target.value)}
+                        className="w-full bg-zinc-950/80 p-2.5 rounded-xl border border-zinc-800 text-zinc-200"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <UploadField
+                        id="verification-proof-upload"
+                        bucketName="sponsor_documents"
+                        label="Identity Proof, Stats Screenshot, or Dashboard Uploader"
+                        value={verificationProofUrl}
+                        onChange={(url) => {
+                          setVerificationProofUrl(url);
+                          addToast("Proof document uploaded successfully!", "success");
+                        }}
+                      />
+                      {verificationProofUrl && (
+                        <p className="text-[10px] text-emerald-400 flex items-center gap-1">
+                          <Check className="w-3 h-3" /> Proof document registered: {verificationProofUrl.substring(0, 50)}...
+                        </p>
+                      )}
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isSubmittingVerification}
+                      className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-800 font-bold uppercase tracking-wider text-white transition-all rounded-xl cursor-all shadow-lg"
+                    >
+                      {isSubmittingVerification ? 'Broadcasting Pitch Details...' : 'Submit Esports verification Form'}
+                    </button>
+                  </form>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'advertisement' && (
+            <div className="space-y-6">
+              <p className="text-xs text-zinc-400">Launch premium advertising campaigns across the primary directory. Display high CTR display banners targeting thousands of weekly players.</p>
+
+              {/* Purchase form */}
+              <div className="p-5 bg-zinc-950/40 border border-zinc-850 rounded-2xl space-y-4">
+                <h3 className="text-xs font-mono font-bold uppercase tracking-widest text-rose-500">Self Advertisement Package Selector</h3>
+                
+                <form onSubmit={handleAdOrderSubmit} className="space-y-4 font-mono text-xs">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div
+                      onClick={() => setAdOrderPlan('1_day')}
+                      className={`p-4 border rounded-xl text-center cursor-pointer transition-all ${
+                        adOrderPlan === '1_day' ? 'border-rose-500 bg-rose-500/5' : 'border-zinc-800 hover:border-zinc-700 bg-zinc-950/30'
+                      }`}
+                    >
+                      <span className="text-[9px] bg-amber-500 text-zinc-950 font-bold px-1.5 py-0.5 rounded tracking-wide uppercase">BASIC</span>
+                      <p className="text-sm font-black text-white mt-1.5">1-Day Plan</p>
+                      <p className="text-xs text-zinc-400 font-bold mt-1">₹199 INR</p>
+                    </div>
+
+                    <div
+                      onClick={() => setAdOrderPlan('7_days')}
+                      className={`p-4 border rounded-xl text-center cursor-pointer transition-all ${
+                        adOrderPlan === '7_days' ? 'border-rose-500 bg-rose-500/5' : 'border-zinc-800 hover:border-zinc-700 bg-zinc-950/30'
+                      }`}
+                    >
+                      <span className="text-[9px] bg-rose-500 text-white font-bold px-1.5 py-0.5 rounded tracking-wide uppercase">TRACTION</span>
+                      <p className="text-sm font-black text-white mt-1.5">7-Day Plan</p>
+                      <p className="text-xs text-zinc-400 font-bold mt-1">₹899 INR</p>
+                    </div>
+
+                    <div
+                      onClick={() => setAdOrderPlan('30_days')}
+                      className={`p-4 border rounded-xl text-center cursor-pointer transition-all ${
+                        adOrderPlan === '30_days' ? 'border-amber-500 bg-amber-500/5' : 'border-zinc-800 hover:border-zinc-700 bg-zinc-950/30'
+                      }`}
+                    >
+                      <span className="text-[9px] bg-cyan-400 text-black font-bold px-1.5 py-0.5 rounded tracking-wide uppercase">ENTERPRISE</span>
+                      <p className="text-sm font-black text-white mt-1.5">30-Day Plan</p>
+                      <p className="text-xs text-zinc-400 font-bold mt-1">₹2,999 INR</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-zinc-500 block uppercase">Promoted Item Target *</label>
+                      <select
+                        value={adOrderType}
+                        onChange={(e) => setAdOrderType(e.target.value as any)}
+                        className="w-full bg-zinc-950/85 p-2.5 rounded-xl border border-zinc-800 text-zinc-300"
+                      >
+                        <option value="profile">Your Player Profile</option>
+                        <option value="team">Custom Team Squad</option>
+                        <option value="tournament">An Arena Tournament</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-zinc-500 block uppercase">Promoted Target ID (Optional)</label>
+                      <input
+                        type="text"
+                        placeholder="Paste profile, squad, or tournament ID"
+                        value={adOrderTargetId}
+                        onChange={(e) => setAdOrderTargetId(e.target.value)}
+                        className="w-full bg-zinc-950 p-2.5 rounded-xl border border-zinc-800 text-zinc-300"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <UploadField
+                      id="ad-banner-link"
+                      bucketName="profile_banners"
+                      label="Ad Banner Graphic Image (728x90 Header or 300x250 square)"
+                      value={adOrderBannerUrl}
+                      onChange={(url) => {
+                        setAdOrderBannerUrl(url);
+                        addToast("Banner graphic registered!", "success");
+                      }}
+                    />
+                    {adOrderBannerUrl && (
+                      <p className="text-[10px] text-zinc-400 truncate">Registered Image: {adOrderBannerUrl}</p>
+                    )}
+                  </div>
+
+                  {/* Payment instructions */}
+                  <div className="p-4 bg-zinc-950/75 border border-zinc-900 rounded-xl grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+                    <div className="md:col-span-1 flex flex-col items-center">
+                      <div 
+                        className="p-1 bg-white rounded-lg inline-block cursor-zoom-in hover:scale-105 transition-transform"
+                        onClick={() => setZoomedQrUrl("https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa=pkumar15187@okaxis&pn=GamingHub&am=199")}
+                        title="Click to zoom QR Code"
+                      >
+                        <img 
+                          src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=upi://pay?pa=pkumar15187@okaxis&pn=GamingHub&am=199" 
+                          alt="Gamer Hub UPI Payment QR" 
+                          className="w-24 h-24 object-cover" 
+                        />
+                      </div>
+                      <span className="text-[8px] text-zinc-500 uppercase mt-1 font-mono">Scan or tap to zoom</span>
+                    </div>
+
+                    <div className="md:col-span-3 space-y-1">
+                      <h5 className="text-xs font-bold text-white uppercase">Direct VIP Subscription payment</h5>
+                      <p className="text-[10px] text-zinc-400">
+                        Transfer the amount corresponding to your chosen plan to secure instant coverage. Click or tap code on left to zoom to fullscreen scanning mode.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-zinc-500 block uppercase">Merchant Transaction UTR ID *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. UPI SESS REF: 518151815..."
+                        value={adOrderTxId}
+                        onChange={(e) => setAdOrderTxId(e.target.value)}
+                        className="w-full bg-zinc-950 p-2.5 rounded-xl border border-zinc-800 text-zinc-300"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <UploadField
+                        id="ad-payment-receipt"
+                        bucketName="payment_screenshots"
+                        label="Payment Screenshot Proof (Optional)"
+                        value={adOrderScreenshotUrl}
+                        onChange={(url) => {
+                          setAdOrderScreenshotUrl(url);
+                          addToast("Ad Payment Screenshot upload complete!", "success");
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isSubmittingAdOrder}
+                    className="w-full py-3 bg-rose-500 hover:bg-rose-600 disabled:bg-zinc-800 font-black uppercase text-white tracking-widest rounded-xl transition-all shadow-lg shadow-rose-500/15"
+                  >
+                    {isSubmittingAdOrder ? 'Transmitting campaign Order...' : 'Generate promotion Campaign Order'}
+                  </button>
+                </form>
+              </div>
+
+              {/* Submitted placements list */}
+              {myAdOrders.length > 0 ? (
+                <div className="space-y-4">
+                  <h4 className="text-xs font-mono text-zinc-500 uppercase tracking-widest">My Advertising Campaigns Trace</h4>
+                  <div className="space-y-3">
+                    {myAdOrders.map(order => (
+                      <div key={order.id} className="p-4 bg-zinc-950/60 border border-zinc-800 rounded-xl space-y-3">
+                        <div className="flex justify-between items-center pb-2 border-b border-zinc-900/60 font-mono text-[11px]">
+                          <div className="flex items-center gap-2">
+                            <span className="text-white font-extrabold uppercase">Campaign ID #{order.id.slice(0, 8)}</span>
+                            <span className="text-[10px] text-rose-400 uppercase bg-rose-950/50 px-2 py-0.5 rounded">
+                              {order.ad_type}
+                            </span>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded font-black uppercase text-[10px] ${
+                            order.status === 'active' ? 'text-emerald-450 bg-emerald-950/20' : 'text-amber-400 bg-amber-950/20'
+                          }`}>
+                            {order.status}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs font-mono">
+                          <div>
+                            <p className="text-zinc-500 uppercase text-[9px]">Duration</p>
+                            <p className="text-white font-bold">{order.duration_days} Days active</p>
+                          </div>
+                          <div>
+                            <p className="text-zinc-500 uppercase text-[9px]">Views Count</p>
+                            <p className="text-white font-bold">{order.views_count || 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-zinc-500 uppercase text-[9px]">Clicks Track</p>
+                            <p className="text-white font-bold">{order.clicks_count || 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-zinc-500 uppercase text-[9px]">CTR Performance</p>
+                            <p className="text-rose-400 font-bold">
+                              {order.views_count && order.views_count > 0 
+                                ? ((order.clicks_count / order.views_count) * 100).toFixed(2)
+                                : '0.00'}%
+                            </p>
+                          </div>
+                        </div>
+
+                        {order.status === 'active' && order.expiry_date && (
+                          <p className="text-[10px] text-zinc-500 font-mono">
+                            PROMOTION ENDS ON: <span className="text-white">{new Date(order.expiry_date).toLocaleString()}</span>
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {activeTab === 'invoices' && (
+            <div className="space-y-6">
+              <p className="text-xs text-zinc-400">All financial trade transactions generate secure, immutable ledger invoices. Track and download official receipts below.</p>
+
+              {myInvoices.length === 0 ? (
+                <div className="p-8 text-center bg-zinc-950/25 border border-zinc-850 rounded-2xl">
+                  <FileText className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
+                  <p className="text-xs font-mono text-zinc-500">No invoices found. Complete premium purchases, purchase diamonds, or place advertisements to create ledgers.</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <h4 className="text-xs font-mono text-zinc-500 uppercase tracking-widest">Official invoice Receipts Ledger</h4>
+                  <div className="space-y-3">
+                    {myInvoices.map(invoice => {
+                      const printInvoice = () => {
+                        const win = window.open("", "_blank");
+                        if (!win) {
+                          alert("Popups are blocked by your browser layout. Please enable them to view or print the generated PDF document receipt in a new workspace.");
+                          return;
+                        }
+                        win.document.write(`
+                          <html>
+                            <head>
+                              <title>Receipt Invoice INV-${invoice.invoice_number}</title>
+                              <style>
+                                body { font-family: 'Courier New', monospace; background-color: #ffffff; color: #111111; padding: 40px; margin: 0; line-height: 1.5; }
+                                .header { text-align: center; border-bottom: 2px dashed #000; padding-bottom: 20px; }
+                                .title { font-size: 20px; font-weight: bold; text-transform: uppercase; margin-top: 0; }
+                                .meta-section { display: flex; justify-content: space-between; margin: 30px 0; font-size: 13px; }
+                                .details-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                                .details-table th, .details-table td { border: 1px solid #777; padding: 10px; font-size: 12px; text-align: left; }
+                                .details-table th { background-color: #f1f1f1; text-transform: uppercase; }
+                                .total { text-align: right; font-size: 16px; font-weight: bold; margin-top: 30px; border-top: 2px dashed #000; padding-top: 15px; }
+                                .footer { text-align: center; margin-top: 80px; font-size: 11px; color: #555; border-top: 1px solid #ccc; padding-top: 15px; }
+                              </style>
+                            </head>
+                            <body>
+                              <div class="header">
+                                <div class="title">Esports Gaming Career Hub LLC</div>
+                                <div style="font-size: 12px; color: #555; margin-top: 5px;">Gamer Calibration Command, Uttar Pradesh, Republic of India</div>
+                              </div>
+
+                              <div class="meta-section">
+                                <div>
+                                  <strong>INVOICE NO:</strong> INV-${invoice.invoice_number}<br>
+                                  <strong>DATE ISSUED:</strong> ${new Date(invoice.created_at).toLocaleString()}<br>
+                                  <strong>STATUS:</strong> ${invoice.status.toUpperCase()}
+                                </div>
+                                <div style="text-align: right;">
+                                  <strong>CLIENT EMAIL:</strong> ${invoice.user_email}<br>
+                                  <strong>PAYMENT TYPE:</strong> ${invoice.invoice_type.toUpperCase()}<br>
+                                  <strong>SYSTEM ID:</strong> ${invoice.user_id}
+                                </div>
+                              </div>
+
+                              <table class="details-table">
+                                <thead>
+                                  <tr>
+                                    <th>Description / Line Item Details</th>
+                                    <th style="width: 150px; text-align: right;">Total Amount</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  <tr>
+                                    <td>${invoice.purchase_details || 'Generic Esports premium microtransaction'}</td>
+                                    <td style="text-align: right; font-weight: bold;">₹${invoice.amount} INR</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+
+                              <div class="total">
+                                BILLING TOTAL: ₹${invoice.amount} INR
+                              </div>
+
+                              <div class="footer">
+                                In case of any dispute, contact pkumar15187@gmail.com with merchant references.<br>
+                                Thank you for backing global tactical network systems!
+                              </div>
+
+                              <script>
+                                window.onload = function() { window.print(); }
+                              </script>
+                            </body>
+                          </html>
+                        `);
+                        win.document.close();
+                      };
+
+                      return (
+                        <div key={invoice.id} className="p-4 bg-zinc-950/60 border border-zinc-800 rounded-xl flex items-center justify-between gap-4 font-mono">
+                          <div className="space-y-1 text-xs">
+                            <span className="text-[10px] text-zinc-500 block uppercase">INVOICE NO: INV-{invoice.invoice_number}</span>
+                            <span className="text-white font-extrabold block">{invoice.purchase_details || 'Premium Service Microtransaction'}</span>
+                            <span className="text-[10px] text-zinc-500">Issued On: {new Date(invoice.created_at).toLocaleString()}</span>
+                          </div>
+
+                          <div className="flex flex-col items-end gap-1 shrink-0 font-mono">
+                            <span className="text-xs font-black text-emerald-400">₹{invoice.amount} INR</span>
+                            <button
+                              onClick={printInvoice}
+                              className="px-2.5 py-1 bg-zinc-900 hover:bg-rose-500 hover:text-white border border-zinc-800 hover:border-rose-500 font-extrabold text-[9px] uppercase tracking-wide rounded transition-all"
+                            >
+                              Print / PDF
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'badges' && (
             <div className="space-y-4">
               <p className="text-xs text-zinc-400 font-sans">Behold your unlocked operator badges and certified reward multipliers.</p>
@@ -3506,9 +4442,23 @@ export default function UserDashboard({
                         </div>
                         
                         <div>
-                          <p className="text-[10px] text-amber-500 font-bold font-mono tracking-wider">
-                            Pay exactly <span className="text-white text-xs font-black px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded font-mono font-sans font-extrabold font-sans font-extrabold">₹{selectedDiamondPackage.price} INR</span>
-                          </p>
+                          {diamondDiscountSummary ? (
+                            <div className="space-y-1 font-mono text-center">
+                              <p className="text-[10px] text-zinc-500 line-through">
+                                Original: ₹{diamondDiscountSummary.original} INR
+                              </p>
+                              <p className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider">
+                                Pay: ₹{diamondDiscountSummary.final} INR
+                              </p>
+                              <p className="text-[9px] text-emerald-500/80 font-bold">
+                                (Saved ₹{diamondDiscountSummary.savings} INR!)
+                              </p>
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-amber-500 font-bold font-mono tracking-wider">
+                              Pay exactly <span className="text-white text-xs font-black px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded font-sans font-extrabold">₹{selectedDiamondPackage.price} INR</span>
+                            </p>
+                          )}
                           <p className="text-[8.5px] text-zinc-500 mt-1.5 leading-normal">
                              Click the QR image to expand & zoom to full size. Scan with any UPI app.
                           </p>
@@ -3553,6 +4503,30 @@ export default function UserDashboard({
                             <div className="flex items-center gap-1.5 text-[10px] text-emerald-450 mt-1">
                               <Check className="w-4 h-4 shrink-0" /> Proof Attached. Click button below to complete.
                             </div>
+                          )}
+                        </div>
+
+                        {/* Coupons support for diamonds bundle */}
+                        <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2">
+                          <label className="block text-[10px] font-mono tracking-widest text-zinc-500 uppercase font-bold">Apply Diamond Discount Code</label>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              placeholder="e.g. GAMER10, DIA50"
+                              className="flex-grow bg-zinc-950 border border-zinc-800 text-xs px-3 py-1.5 text-white focus:outline-none focus:border-cyan-500 rounded"
+                              value={diamondCouponCode}
+                              onChange={(e) => setDiamondCouponCode(e.target.value)}
+                            />
+                            <button
+                              type="button"
+                              onClick={handleApplyDiamondCoupon}
+                              className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1 text-xs font-mono text-zinc-350 rounded font-bold"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                          {diamondDiscountSummary && (
+                            <p className="text-[10px] text-emerald-450 font-mono">Current coupon active: ₹{diamondDiscountSummary.savings} INR off verified!</p>
                           )}
                         </div>
 
@@ -3697,6 +4671,140 @@ export default function UserDashboard({
             </div>
           )}
 
+          {activeTab === 'referrals' && (
+            <div className="space-y-6">
+              {/* Top Banner introducing the referral deal */}
+              <div className="p-6 bg-gradient-to-r from-rose-950/20 via-zinc-900 to-zinc-950 rounded-2xl border border-rose-500/20 relative overflow-hidden">
+                <div className="absolute -top-12 -right-12 w-48 h-48 bg-rose-500/10 blur-3xl rounded-full"></div>
+                <div className="max-w-xl space-y-2">
+                  <span className="text-[10px] uppercase tracking-widest font-mono text-rose-450 font-bold bg-rose-950/45 px-2.5 py-1 rounded border border-rose-500/20">
+                    SQUADRON GROWTH INITIATIVE
+                  </span>
+                  <h3 className="text-2xl font-black text-white font-display tracking-tight uppercase">
+                    EXPAND THE HQ. MULTIPLY THE PERKS.
+                  </h3>
+                  <p className="text-xs text-zinc-400">
+                    Invite new pilots to clear recruit calibration. When they activate their first premium membership subscription, you receive <strong className="text-white">+50 Winning Diamonds</strong> and they get a registration bonus of <strong className="text-white">+20 Top-up Diamonds</strong>!
+                  </p>
+                </div>
+              </div>
+
+              {/* Metrics Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="p-5 bg-zinc-950 border border-zinc-850 rounded-2xl relative overflow-hidden">
+                  <span className="text-[10px] font-mono text-zinc-550 uppercase block tracking-wider">YOUR EXCLUSIVE INVITE CODE</span>
+                  <div className="flex items-center justify-between gap-2 mt-2">
+                    <span className="text-2xl font-black font-mono text-rose-450 tracking-wider">
+                      {currentUser.referralCode || 'NOT_FOUND'}
+                    </span>
+                    <button
+                      onClick={() => {
+                        if (currentUser.referralCode) {
+                          navigator.clipboard.writeText(currentUser.referralCode);
+                          addToast("Affiliate referral code copied to clipboard!", "success");
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white rounded-lg border border-zinc-800 hover:border-zinc-700 text-xs font-mono transition-all uppercase"
+                    >
+                      Copy Code
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-5 bg-zinc-950 border border-zinc-850 rounded-2xl">
+                  <span className="text-[10px] font-mono text-zinc-550 uppercase block tracking-wider">TOTAL ACTIVE RECRUITS</span>
+                  <div className="text-3xl font-black font-mono text-white mt-1">
+                    {userReferrals.filter(r => r.referrer_user_id === currentUser.id).length}
+                  </div>
+                  <span className="text-[9px] text-zinc-550 block mt-0.5">Successful premium converted accounts</span>
+                </div>
+
+                <div className="p-5 bg-zinc-950 border border-zinc-850 rounded-2xl">
+                  <span className="text-[10px] font-mono text-zinc-550 uppercase block tracking-wider">TOTAL DIAMONDS EARNED</span>
+                  <div className="text-3xl font-black font-mono text-emerald-400 mt-1">
+                    💎 {userReferrals.filter(r => r.referrer_user_id === currentUser.id && r.reward_status === 'rewarded').length * 50}
+                  </div>
+                  <span className="text-[9px] text-zinc-550 block mt-0.5">Credited straight to your Winning wallet</span>
+                </div>
+              </div>
+
+              {/* Share Invite Link panel */}
+              <div className="p-5 bg-zinc-950/80 border border-zinc-850 rounded-2xl space-y-3">
+                <h4 className="text-sm font-bold text-white uppercase tracking-wider font-display flex items-center gap-2">
+                  <span>🔗</span> PERSONAL INVITATION LINK
+                </h4>
+                <div className="flex flex-col md:flex-row items-stretch gap-2.5">
+                  <input
+                    type="text"
+                    readOnly
+                    value={`${window.location.origin}?ref=${currentUser.referralCode}`}
+                    className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs text-zinc-350 font-mono focus:outline-none"
+                  />
+                  <button
+                    onClick={() => {
+                      const link = `${window.location.origin}?ref=${currentUser.referralCode}`;
+                      navigator.clipboard.writeText(link);
+                      addToast("Your unique invitation link copied to clipboard!", "success");
+                    }}
+                    className="px-5 py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl text-xs font-mono font-bold uppercase tracking-wider transition-all"
+                  >
+                    Copy Link
+                  </button>
+                </div>
+              </div>
+
+              {/* Referrals & Reward tables */}
+              <div className="p-5 bg-zinc-950 border border-zinc-850 rounded-2xl space-y-4">
+                <div className="flex justify-between items-center border-b border-zinc-850 pb-3">
+                  <h4 className="text-xs font-black uppercase text-white tracking-widest font-mono">
+                    📋 RECRUITS TRACKING LEDGER ({userReferrals.filter(r => r.referrer_user_id === currentUser.id).length})
+                  </h4>
+                </div>
+
+                {isReferralsLoading ? (
+                  <div className="p-6 text-center text-zinc-550 font-mono text-xs">
+                    Synthesizing affiliate referral network nodes...
+                  </div>
+                ) : userReferrals.filter(r => r.referrer_user_id === currentUser.id).length === 0 ? (
+                  <div className="py-8 text-center text-zinc-550 font-mono text-xs">
+                    No records found yet. Share your code or link above to begin.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-zinc-900 text-[10px] font-mono text-zinc-550 uppercase">
+                          <th className="pb-2.5">Recruit Athlete</th>
+                          <th className="pb-2.5">Invitation Date</th>
+                          <th className="pb-2.5">Commission Reward</th>
+                          <th className="pb-2.5 text-right">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {userReferrals.filter(r => r.referrer_user_id === currentUser.id).map((ref: any) => (
+                          <tr key={ref.id} className="border-b border-zinc-900 text-xs font-mono text-zinc-300">
+                            <td className="py-3 font-bold text-white">{ref.referredName || 'recruit_' + ref.referred_user_id.slice(0, 5)}</td>
+                            <td className="py-3 text-zinc-450">{new Date(ref.created_at).toLocaleDateString()}</td>
+                            <td className="py-3 text-rose-450 font-bold">+50 Winning Diamonds</td>
+                            <td className="py-3 text-right">
+                              <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wide border ${
+                                ref.reward_status === 'rewarded'
+                                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                                  : 'bg-amber-500/10 border-amber-500/20 text-amber-500'
+                              }`}>
+                                {ref.reward_status === 'rewarded' ? 'SUCCESS CONVERTED' : 'PENDING PURCHASE'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {activeTab === 'membership' && (
 
             <div className="space-y-6">
@@ -3726,6 +4834,23 @@ export default function UserDashboard({
                       ? `Your ₹${currentUser.membership === 'Silver' ? 49 : currentUser.membership === 'Gold' ? 99 : 199} subscription is pending verification on Transaction ID UTR: "${currentUser.membershipTxId || 'Pending'}".`
                       : `Membership Active. Expiry Indicator: Lifetime Unlimited Support. Premium border frames and cover panels enabled.`}
                   </p>
+                  {currentUser.membership !== 'Free' && (
+                    <div className="mt-3 flex items-center gap-2">
+                      {userCancellationRequests.some(r => r.status === 'pending') ? (
+                        <div className="text-[10px] bg-amber-500/10 border border-amber-500/20 text-amber-400 px-3 py-1 rounded-xl font-mono flex items-center gap-1.5 animate-pulse">
+                          <span>⏰</span>
+                          <span>Cancellation Pending Admin Verification</span>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setIsCancelSubOpen(true)}
+                          className="bg-rose-500/10 border border-rose-500/30 text-rose-450 px-3.5 py-1.5 rounded-xl text-[10px] font-mono leading-none tracking-wider uppercase font-black hover:bg-rose-500/20 transition-all select-none cursor-pointer"
+                        >
+                          ❌ Cancel Subscription
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 w-full lg:w-auto font-mono text-center">
@@ -3749,6 +4874,63 @@ export default function UserDashboard({
                   </div>
                 </div>
               </div>
+
+              {/* 7-Day Premium Trial Offer section */}
+              {!currentUser.trial_used && currentUser.membership === 'Free' && (
+                <div className="p-5 bg-gradient-to-r from-amber-500/15 via-yellow-500/10 to-transparent border border-amber-500/30 rounded-2xl relative overflow-hidden flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div className="space-y-1">
+                    <span className="text-[8px] font-mono tracking-wider text-amber-400 bg-amber-400/10 px-2.5 py-0.5 rounded font-black uppercase">GOLD & PLATINUM 7-DAY TRIAL PASS DECK</span>
+                    <h4 className="text-xs font-black font-mono text-white uppercase mt-1">Acquire VIP Access for 7 Days</h4>
+                    <p className="text-zinc-400 text-[10px] font-sans">
+                      Deducting 5 Top-up Diamonds (₹5 equivalent) activates a full 7-day premium suite. Fully compatible with life-sized banners, tags, and decal stickers!
+                    </p>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={async () => {
+                        const topup = currentUser.topup_diamonds || 0;
+                        if (topup < 5) {
+                          alert("Requires 5 Top-up Diamonds in your wallet! Please go to the Diamond tab and buy at least 5 diamonds first.");
+                          return;
+                        }
+                        if (confirm("Initiate 7-day trial of Gold tier for 5 Top-up Diamonds?")) {
+                          try {
+                            const updated = await supabaseService.claimTrial(currentUser.id, 'Gold');
+                            onUpdateProfile(updated);
+                            alert("Success! 7-day Gold trial active.");
+                          } catch (err: any) {
+                            alert(err.message || "Failed to start trial.");
+                          }
+                        }
+                      }}
+                      className="bg-purple-600 hover:bg-purple-700 text-white border border-purple-500/30 px-3.5 py-2 rounded-xl text-[9px] font-mono font-black uppercase transition-all select-none cursor-pointer"
+                    >
+                      ⚡ Gold Trial (₹5)
+                    </button>
+                    <button
+                      onClick={async () => {
+                        const topup = currentUser.topup_diamonds || 0;
+                        if (topup < 5) {
+                          alert("Requires 5 Top-up Diamonds in your wallet! Please go to the Diamond tab and buy at least 5 diamonds first.");
+                          return;
+                        }
+                        if (confirm("Initiate 7-day trial of Platinum tier for 5 topup diamonds?")) {
+                          try {
+                            const updated = await supabaseService.claimTrial(currentUser.id, 'Platinum');
+                            onUpdateProfile(updated);
+                            alert("Success! 7-day Platinum trial active.");
+                          } catch (err: any) {
+                            alert(err.message || "Failed to start trial.");
+                          }
+                        }
+                      }}
+                      className="bg-cyan-600 hover:bg-cyan-750 text-white border border-cyan-500/30 px-3.5 py-2 rounded-xl text-[9px] font-mono font-black uppercase transition-all select-none cursor-pointer"
+                    >
+                      💎 Platinum Trial (₹5)
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Premium membership pricing cards */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -3828,9 +5010,23 @@ export default function UserDashboard({
                       )}
                     </div>
                     <div>
-                      <p className="text-[10px] text-amber-500 font-bold font-mono tracking-wider">
-                        Pay ₹{premiumTiers[selectedPremiumTier].price - Math.floor((premiumTiers[selectedPremiumTier].price * appliedDiscount) / 100)} INR
-                      </p>
+                      {discountSummary ? (
+                        <div className="space-y-1 font-mono text-center">
+                          <p className="text-[10px] text-zinc-500 line-through">
+                            Original: ₹{discountSummary.original} INR
+                          </p>
+                          <p className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider">
+                            Pay: ₹{discountSummary.final} INR
+                          </p>
+                          <p className="text-[9px] text-emerald-500/80 font-bold">
+                            (Saved ₹{discountSummary.savings} INR!)
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-amber-500 font-bold font-mono tracking-wider">
+                          Pay ₹{premiumTiers[selectedPremiumTier].price} INR
+                        </p>
+                      )}
                       <p className="text-[8.5px] text-zinc-500 mt-1.5 leading-normal">
                         Click the QR image to expand & zoom to full size. Scan with any UPI app.
                       </p>
@@ -3917,6 +5113,91 @@ export default function UserDashboard({
                   </button>
                 </div>
               </div>
+
+              {/* Cancel Subscription Request Form section */}
+              {isCancelSubOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-5 bg-zinc-950 border border-rose-900/40 rounded-2xl space-y-4"
+                >
+                  <div className="flex justify-between items-center border-b border-zinc-900 pb-3">
+                    <div>
+                      <span className="text-[9px] text-rose-500 font-mono font-bold uppercase block tracking-wider">CANCELLATION REQUEST PROTOCOL</span>
+                      <h4 className="text-sm font-extrabold text-white">Cancel Your Premium VIP Membership</h4>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsCancelSubOpen(false)}
+                      className="text-xs text-zinc-500 hover:text-white font-mono bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded cursor-pointer"
+                    >
+                      Close Form
+                    </button>
+                  </div>
+
+                  <div className="p-3.5 bg-rose-955/10 border border-rose-905_20 text-rose-350 text-xs rounded-xl font-sans leading-normal">
+                    ⚠️ <strong>Important Note:</strong> Cancelling your membership will revert your account to the Free pass tier. Premium badge multipliers, decals, and visual custom frames will be locked immediately upon approval.
+                  </div>
+
+                  <form onSubmit={handleCancelSubscriptionSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-[10px] text-zinc-500 uppercase font-mono font-extrabold mb-1">
+                          UPI ID Address (If applicable)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="yourname@upi"
+                          className="w-full bg-zinc-900/60 border border-zinc-800 text-white rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-amber-500 font-mono"
+                          value={cancelUpiId}
+                          onChange={e => setCancelUpiId(e.target.value)}
+                        />
+                        <span className="text-[9.5px] text-zinc-500 block mt-1">UPI address to route any refunds or validation logs.</span>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-zinc-500 uppercase font-mono font-extrabold mb-1">
+                          Reason for Cancellation (Optional)
+                        </label>
+                        <textarea
+                          rows={3}
+                          placeholder="Let us know how we can improve..."
+                          className="w-full bg-zinc-900/60 border border-zinc-800 text-white rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-amber-500"
+                          value={cancelReason}
+                          onChange={e => setCancelReason(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 flex flex-col justify-between">
+                      <div>
+                        <span className="block text-[10px] text-zinc-500 uppercase font-mono font-extrabold mb-1">
+                          Payout UPI QR Image Upload
+                        </span>
+                        <UploadField
+                          id="cancellation-qr-code-upload"
+                          bucketName="payment_screenshots"
+                          label="Upload UPI Payout QR Code"
+                          value={cancelQrUrl}
+                          onChange={(url) => setCancelQrUrl(url)}
+                          placeholder="Drag QR image here, or select"
+                        />
+                        <span className="text-[9.5px] text-zinc-400 block mt-1">
+                          * Note: At least one of UPI ID OR QR Image Upload is <strong className="text-amber-400 italic">strictly required</strong> to submit cancellation.
+                        </span>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isSubmittingCancelSub}
+                        className="w-full bg-rose-500 hover:bg-rose-600 text-white font-black py-2.5 rounded-xl text-xs font-mono tracking-widest uppercase transition-all shadow-md disabled:opacity-40 cursor-pointer"
+                      >
+                        {isSubmittingCancelSub ? "SUBMITTING PROTOCOL..." : "CONFIRM & SUBMIT CANCELLATION"}
+                      </button>
+                    </div>
+                  </form>
+                </motion.div>
+              )}
             </div>
           )}
         </div>

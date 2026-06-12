@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { SponsorApplication, UserProfile } from '../types';
-import { Sparkles, DollarSign, Send, Mail, Download, ShieldCheck, UserCheck, Star, Award, BarChart3, HelpCircle, Gamepad2, FileDown, Plus } from 'lucide-react';
+import { SponsorApplication, UserProfile, Sponsor } from '../types';
+import { supabaseService } from '../lib/supabaseService';
+import { Sparkles, DollarSign, Send, Mail, Download, ShieldCheck, UserCheck, Star, Award, BarChart3, HelpCircle, Gamepad2, FileDown, Plus, Globe, ArrowRight, ArrowLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getUserProfileBannerStyle, getUserProfileFrameClass } from '../lib/premiumUtils';
 import { GamerAvatar } from './GamerAvatar';
@@ -32,6 +33,48 @@ export default function SponsorZone({
   const [contactEmail, setContactEmail] = useState(currentUser?.email || '');
   const [offerRequirements, setOfferRequirements] = useState('');
   const [sponsorDoc, setSponsorDoc] = useState('');
+
+  // Sponsoring Brands Premium Database Marketplace
+  const [partnerBrands, setPartnerBrands] = useState<Sponsor[]>([]);
+  const [currentSlide, setCurrentSlide] = useState(0);
+
+  React.useEffect(() => {
+    let active = true;
+    const loadBrands = async () => {
+      try {
+        const brands = await supabaseService.getSponsorBrands();
+        const activeOnly = brands.filter(b => b.active);
+        if (active) {
+          setPartnerBrands(activeOnly);
+          // Register dynamic impressions increment tracking
+          activeOnly.forEach(b => {
+            supabaseService.recordSponsorView(b.id).catch(() => {});
+          });
+        }
+      } catch (err) {
+        console.error("Failed loading partner brand campaigns:", err);
+      }
+    };
+    loadBrands();
+    return () => { active = false; };
+  }, []);
+
+  // Slide interval rotation loop
+  React.useEffect(() => {
+    if (partnerBrands.length <= 1) return;
+    const interval = setInterval(() => {
+      setCurrentSlide(prev => (prev + 1) % partnerBrands.length);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [partnerBrands]);
+
+  const handleBrandClick = async (brandId: string) => {
+    try {
+      await supabaseService.recordSponsorClick(brandId, currentUser ? currentUser.id : null);
+    } catch (err) {
+      console.error("Tracking click count dispatch fail:", err);
+    }
+  };
 
   // Sponsoring Brands mock targets
   const SPONSORING_BRANDS = [
@@ -112,8 +155,169 @@ export default function SponsorZone({
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
         {/* Left Side: Brand partnerships and gamers kit sheet */}
         <div className="xl:col-span-2 space-y-6">
+
+          {/* PREMIUM SPONSOR CAMPAIGNS SHOWCASE */}
+          {partnerBrands.length > 0 && (
+            <div className="space-y-6">
+              {/* FEATURED SPONSOR BANNER CAROUSEL */}
+              <div id="partner-brand-carousel" className="bg-zinc-950/80 border border-amber-500/20 rounded-2xl overflow-hidden relative group">
+                <div className="absolute top-3 right-3 z-20 bg-black/70 backdrop-blur px-2.5 py-1 rounded-md text-[9px] font-mono font-bold text-amber-400 border border-amber-500/20 uppercase tracking-widest">
+                  PLATFORM SPONSOR SPOTLIGHT
+                </div>
+
+                <div className="relative h-64 sm:h-72 overflow-hidden flex items-center justify-center bg-zinc-950">
+                  <AnimatePresence mode="wait">
+                    {partnerBrands.map((brand, idx) => {
+                      if (idx !== currentSlide) return null;
+                      return (
+                        <motion.div
+                          key={brand.id}
+                          className="absolute inset-0 w-full h-full"
+                          initial={{ opacity: 0, scale: 1.02 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.98 }}
+                          transition={{ duration: 0.4 }}
+                        >
+                          {brand.banner_url ? (
+                            <img
+                              src={brand.banner_url}
+                              referrerPolicy="no-referrer"
+                              alt={brand.company_name || "Sponsor banner"}
+                              className="w-full h-full object-cover opacity-50"
+                              width={400}
+                              height={160}
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="w-full h-full bg-[radial-gradient(ellipse_at_bottom,rgba(245,158,11,0.1),transparent)] flex items-center justify-center" />
+                          )}
+
+                          <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/45 to-transparent flex flex-col justify-end p-6 text-left">
+                            <div className="flex items-center gap-3 mb-2.5">
+                              {brand.logo_url && (
+                                <img
+                                  src={brand.logo_url}
+                                  referrerPolicy="no-referrer"
+                                  className="w-9 h-9 rounded-xl object-contain bg-zinc-950 p-1 border border-zinc-800"
+                                  alt={brand.company_name || "Sponsor logo"}
+                                  width={36}
+                                  height={36}
+                                  loading="lazy"
+                                />
+                              )}
+                              <h3 className="text-lg font-black text-white uppercase tracking-wide leading-none">{brand.company_name}</h3>
+                            </div>
+
+                            <p className="text-zinc-200 text-xs sm:text-sm max-w-xl leading-relaxed line-clamp-2 mb-4 font-sans">
+                              {brand.description || "Active advertising campaign. Connect to back the portal."}
+                            </p>
+
+                            <div className="flex items-center gap-3">
+                              {brand.website_url ? (
+                                <a
+                                  href={brand.website_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={() => handleBrandClick(brand.id)}
+                                  className="bg-amber-500 hover:bg-amber-600 text-zinc-950 font-black font-mono text-[10px] px-5 py-2.5 rounded-xl flex items-center gap-1.5 transition-all shadow-md uppercase cursor-pointer animate-pulse"
+                                >
+                                  <Globe className="w-3.5 h-3.5" />
+                                  VISIT OFFICIAL BRAND SITE
+                                  <ArrowRight className="w-3.5 h-3.5" />
+                                </a>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleBrandClick(brand.id);
+                                    handleOpenPitch(brand.company_name);
+                                  }}
+                                  className="bg-pink-500 hover:bg-pink-600 text-white font-mono font-black text-[10px] px-5 py-2.5 rounded-xl flex items-center gap-1.5 transition-all shadow-md uppercase"
+                                >
+                                  PITCH FOR SPONSORSHIP
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+
+                  {/* Left / Right Arrows */}
+                  {partnerBrands.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentSlide(prev => (prev - 1 + partnerBrands.length) % partnerBrands.length)}
+                        className="absolute left-3 top-1/2 -translate-y-1/2 p-2 rounded-xl bg-black/65 border border-zinc-850 text-white hover:bg-black transition-all z-20 cursor-pointer text-center"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentSlide(prev => (prev + 1) % partnerBrands.length)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-xl bg-black/65 border border-zinc-850 text-white hover:bg-black transition-all z-20 cursor-pointer text-center"
+                      >
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
+                  
+                  {/* Indicators */}
+                  {partnerBrands.length > 1 && (
+                    <div className="absolute bottom-4 right-6 flex gap-1 z-20">
+                      {partnerBrands.map((_, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setCurrentSlide(i)}
+                          className={`w-1.5 h-1.5 rounded-full transition-all ${i === currentSlide ? "bg-amber-400 w-3" : "bg-zinc-650"}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* SPONSOR LOGO MARQUEE GRID */}
+              <div className="bg-zinc-900/40 border border-zinc-850 p-4.5 rounded-2xl text-left">
+                <span className="text-[9px] font-mono font-black text-zinc-500 uppercase tracking-widest block mb-3">
+                  🤝 Active Logo Coalitions (Carousel Grid)
+                </span>
+                
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                  {partnerBrands.map((brand) => (
+                    <a
+                      key={brand.id}
+                      href={brand.website_url || "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => handleBrandClick(brand.id)}
+                      className="bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 p-2.5 rounded-xl flex flex-col items-center justify-center text-center gap-1.5 transition-all group cursor-pointer hover:border-amber-500/20"
+                    >
+                      {brand.logo_url ? (
+                        <img
+                          src={brand.logo_url}
+                          referrerPolicy="no-referrer"
+                          alt={brand.company_name}
+                          className="w-10 h-10 object-contain rounded-lg bg-zinc-900 duration-250 group-hover:scale-105"
+                        />
+                      ) : (
+                        <span className="text-xl">⭐</span>
+                      )}
+                      <span className="text-[9px] font-black text-zinc-400 uppercase tracking-tight group-hover:text-white line-clamp-1">
+                        {brand.company_name}
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Active Sponsorship programs */}
-          <div className="bg-zinc-900/60 border border-zinc-805/85 rounded-2xl p-6 relative">
+          <div className="bg-zinc-900/60 border border-zinc-855 rounded-2xl p-6 relative">
             <h3 className="text-lg font-black text-white tracking-wide flex items-center gap-2 mb-4">
               <Star className="text-pink-400 w-5 h-5" />
               Verified Sponsor Vacancies

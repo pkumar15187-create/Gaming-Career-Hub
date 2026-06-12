@@ -50,6 +50,8 @@ export interface UserProfile {
   membershipTxId?: string;
   membershipScreenshot?: string;
   referredBy?: string;
+  referredByCode?: string;
+  referred_by_code?: string;
   referralCode: string;
   
   // Premium System additions
@@ -96,6 +98,15 @@ export interface UserProfile {
   platinum_overlay_url?: string;
   platinum_profile_card_url?: string;
   platinum_hud_assets?: any; // JSON string or parsed object
+  
+  // 7-day Trial attributes
+  trial_used?: boolean;
+  trial_start?: string | null;
+  trial_end?: string | null;
+  
+  // Creator verification status
+  is_verified?: boolean;
+  verified_type?: 'Streamer' | 'Player' | 'Team' | 'Organization' | null;
 }
 
 export interface ProfileComment {
@@ -372,4 +383,179 @@ export interface WithdrawalRequest {
   approved_at: string | null;
   paid_at: string | null;
 }
+
+export interface SubscriptionCancellationRequest {
+  id: string;
+  user_id: string;
+  user_email: string;
+  plan: 'Silver' | 'Gold' | 'Platinum' | string;
+  upi_id: string;
+  qr_url: string | null;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  admin_note: string | null;
+  created_at: string;
+}
+
+export interface Sponsor {
+  id: string;
+  company_name: string;
+  logo_url: string;
+  website_url: string;
+  banner_url: string;
+  description: string;
+  active: boolean;
+  start_date: string;
+  end_date: string;
+  created_at: string;
+  views?: number;
+  clicks?: number;
+  ctr?: number;
+}
+
+export interface SponsorClick {
+  id: string;
+  sponsor_id: string;
+  user_id: string | null;
+  clicked_at: string;
+}
+
+export interface Referral {
+  id: string;
+  referrer_user_id: string;
+  referred_user_id: string;
+  referral_code: string;
+  reward_status: 'pending' | 'rewarded';
+  inviter_reward_diamonds: number;
+  referred_reward_diamonds: number;
+  created_at: string;
+  rewarded_at?: string | null;
+  // UI helpers
+  referrerName?: string;
+  referredName?: string;
+}
+
+export interface PromoCode {
+  id: string;
+  code: string;
+  discount_type: 'flat' | 'percentage';
+  discount_value: number;
+  applies_to: 'membership' | 'diamond_purchase' | 'tournament_entry' | 'all';
+  usage_limit: number;
+  used_count: number;
+  active: boolean;
+  start_date: string;
+  end_date: string;
+  created_at: string;
+}
+
+export interface PromoUsage {
+  id: string;
+  promo_code_id: string;
+  user_id: string;
+  context: 'membership' | 'diamond_purchase' | 'tournament_entry';
+  discount_amount: number;
+  original_amount: number;
+  final_amount: number;
+  created_at: string;
+  // UI helpers
+  promo_code?: string;
+  gamer_name?: string;
+  user_email?: string;
+}
+
+export interface CreatorVerificationRequest {
+  id: string;
+  user_id: string;
+  real_name: string;
+  creator_name: string;
+  youtube_link?: string;
+  instagram_link?: string;
+  discord_link?: string;
+  uid?: string;
+  description_text?: string;
+  proof_url: string;
+  status: 'pending' | 'approved' | 'rejected' | 'changes_requested';
+  admin_notes?: string;
+  created_at: string;
+  updated_at?: string;
+  type: 'Streamer' | 'Player' | 'Team' | 'Organization';
+  
+  // UI helper
+  gamer_name?: string;
+  user_email?: string;
+}
+
+export interface FeaturedItem {
+  id: string;
+  item_type: 'player' | 'team' | 'organization' | 'streamer' | 'tournament';
+  item_id: string; // user_id, team_id or tournament_id
+  title: string;
+  subtitle?: string;
+  image_url?: string;
+  pinned: boolean;
+  expiry_date?: string;
+  created_at: string;
+}
+
+export interface AdvertisementOrder {
+  id: string;
+  user_id: string;
+  ad_type: 'profile' | 'team' | 'tournament';
+  target_id: string; // user_id, team_id, or tournament_id
+  banner_url?: string;
+  plan: '1_day' | '7_days' | '30_days';
+  amount: number;
+  transaction_id: string;
+  payment_screenshot_url: string;
+  status: 'pending' | 'approved' | 'rejected';
+  start_date?: string;
+  end_date?: string;
+  created_at: string;
+  approved_at?: string;
+  views: number;
+  clicks: number;
+  
+  // UI helper
+  gamer_name?: string;
+  user_email?: string;
+}
+
+export interface BannerAd {
+  id: string;
+  slot_type: 'top_banner' | 'sidebar_banner' | 'footer_banner' | 'popup_banner';
+  title: string;
+  image_url: string;
+  link_url: string;
+  active: boolean;
+  start_date: string;
+  end_date: string;
+  views: number;
+  clicks: number;
+  ctr?: number;
+  created_at: string;
+}
+
+export interface Invoice {
+  id: string;
+  invoice_number: string;
+  user_id: string;
+  amount: number;
+  status: 'paid' | 'unpaid' | 'cancelled';
+  description: string;
+  item_type: 'membership' | 'diamond_purchase' | 'advertisement_purchase' | 'tournament_entry';
+  billing_name?: string;
+  billing_email?: string;
+  created_at: string;
+}
+
+export interface AnalyticsEvent {
+  id: string;
+  event_type: 'user_active' | 'user_new' | 'user_returning' | 'referral_conversion' | 'promo_usage' | 'ad_view' | 'ad_click' | 'sponsor_view' | 'sponsor_click';
+  user_id?: string | null;
+  target_id?: string | null;
+  metadata?: string | null; // serialized JSON or notes
+  created_at: string;
+}
+
 

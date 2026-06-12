@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Disconnected | Gaming Career Hub</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
+    
+    body {
+      background-color: #0b0c10;
+      color: #f3f4f6;
+      font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      box-sizing: border-box;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    /* Scanlines effect to represent digital matching screen */
+    body::before {
+      content: " ";
+      display: block;
+      position: fixed;
+      top: 0; left: 0; bottom: 0; right: 0;
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+      z-index: 10;
+      background-size: 100% 4px, 6px 100%;
+      pointer-events: none;
+    }
+
+    .ambient-glow {
+      position: absolute;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle, rgba(239, 68, 68, 0.1) 0%, transparent 70%);
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .offline-container {
+      position: relative;
+      background-color: #12131a;
+      border: 1px solid #1f2029;
+      border-top: 4px solid #ef4444;
+      border-radius: 20px;
+      padding: 2.5rem 1.5rem;
+      max-width: 440px;
+      width: 90%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      z-index: 10;
+    }
+
+    .badge-bar {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background-color: rgba(239, 68, 68, 0.06);
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      border-radius: 9999px;
+      padding: 0.4rem 0.8rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      background-color: #ef4444;
+      border-radius: 50%;
+      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+      animation: pulse 1.6s infinite;
+    }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+      }
+      70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+      }
+      100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+      }
+    }
+
+    .badge-text {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: #f87171;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .icon-wrapper {
+      margin: 0.5rem auto 1.5rem;
+      width: 72px;
+      height: 72px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, rgba(31,32,41,0.8), rgba(26,27,35,0.8));
+      border: 1px solid #2d2f3d;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .offline-svg {
+      width: 32px;
+      height: 32px;
+      color: #ef4444;
+    }
+
+    h1 {
+      font-size: 1.55rem;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.5rem;
+      color: #ffffff;
+    }
+
+    p {
+      color: #9cb2cd;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      margin: 0 0 1.5rem;
+    }
+
+    .cached-note {
+      background-color: #0d0e14;
+      border: 1px solid #1c1d26;
+      border-radius: 12px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 2rem;
+      text-align: left;
+    }
+
+    .cached-note-title {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: #9ca3af;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+    }
+
+    .cached-note-desc {
+      font-size: 0.75rem;
+      color: #6b7280;
+      margin: 0;
+      line-height: 1.4;
+    }
+
+    /* Tip box */
+    .tip-box {
+      border-top: 1px solid #1f2029;
+      padding-top: 1.25rem;
+      margin-top: 1.5rem;
+      text-align: left;
+    }
+
+    .tip-header {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: #f59e0b;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.4rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .tip-content {
+      font-size: 0.75rem;
+      color: #9ca3af;
+      line-height: 1.45;
+      margin: 0;
+      font-style: italic;
+    }
+
+    /* Action buttons style matching our gaming theme */
+    .action-btn {
+      width: 100%;
+      background-color: #ef4444;
+      color: #ffffff;
+      border: none;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 900;
+      font-size: 0.8rem;
+      padding: 0.85rem 1.25rem;
+      border-radius: 10px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      transition: all 0.15s ease;
+      box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+    }
+
+    .action-btn:hover {
+      background-color: #dc2626;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 16px rgba(239, 68, 68, 0.3);
+    }
+
+    .action-btn:active {
+      transform: translateY(1px);
+    }
+
+    .footer-stamp {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: #3f3f46;
+      margin-top: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="ambient-glow"></div>
+
+  <div class="offline-container">
+    
+    <!-- Pulse badge status -->
+    <div class="badge-bar">
+      <div class="pulse-dot"></div>
+      <div class="badge-text" id="status-label">SIGNAL INTERRUPTED</div>
+    </div>
+
+    <!-- Main visual icon -->
+    <div class="icon-wrapper">
+      <svg class="offline-svg" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-3.536 4.978 4.978 0 011.414-3.536m0 0L4 4m.707.707l2.829 2.829M12 12c.552 0 1-.448 1-1s-.448-1-1-1-1 .448-1 1 .448 1 1 1z"></path>
+      </svg>
+    </div>
+
+    <h1>No Internet Connection</h1>
+    <p>Your local network signal is offline. While you wait, the applet's pre-cached resources will continue keeping navigation operational.</p>
+
+    <!-- Network state cached content alert -->
+    <div class="cached-note">
+      <div class="cached-note-title">Offline Cache Active</div>
+      <p class="cached-note-desc">Previously visited tournament brackets, roster standings, and leaderboards rest safely readable directly from browser cache memory.</p>
+    </div>
+
+    <!-- Manual retry launcher -->
+    <button class="action-btn" id="retry-trigger">Verify connection status</button>
+
+    <!-- Daily esports training tips feed -->
+    <div class="tip-box">
+      <div class="tip-header">
+        <svg style="width:12px;height:12px;color:#f59e0b;" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+        </svg>
+        <span>Esports Pro Growth Tip</span>
+      </div>
+      <p class="tip-content" id="tip-text">Consistently reviewing your match recordings (VODs) reveals tactical positioning and target errors that live play hides.</p>
+    </div>
+
+    <div class="footer-stamp">GAMING CAREER HUB • COLD SPA STANDALONE</div>
+  </div>
+
+  <script>
+    // 1. Interactive competitive tips library
+    const TIPS_INDEX = [
+      "Keep crosshair position at standard head level when corners checking to decrease time to kill metrics.",
+      "Stay hydrated during long league grinds. Moderate hydration elevates your neurological reflex accuracy by 10%.",
+      "Prioritize communicative callouts over backseat critique. Solid teams win rounds, fractured microskills lose matches.",
+      "Track enemy utility cooldowns. Initiating targets immediately after their critical defense expires triggers high win rates.",
+      "Take small 5-minute movement pauses between competitive lobbies to relieve tendon strain, preventing RSI injuries.",
+      "A healthy sleeping pattern directly determines peak reaction speed. Reflexes drop dramatically with just 2 hours of sleep loss."
+    ];
+
+    // Select random tip on load to make it fresh each session
+    const randomTip = TIPS_INDEX[Math.floor(Math.random() * TIPS_INDEX.length)];
+    document.getElementById('tip-text').innerText = randomTip;
+
+    // 2. Manual and Automatic online reconnection hooks
+    function checkNetworkSignal() {
+      const label = document.getElementById('status-label');
+      const dot = document.querySelector('.pulse-dot');
+
+      if (navigator.onLine) {
+        label.innerText = "SIGNAL RECOVERED";
+        dot.style.backgroundColor = "#10b981"; // Emerald green
+        dot.style.boxShadow = "0 0 12px #10b981";
+        
+        // Auto reload after brief success visualization
+        setTimeout(() => {
+          window.location.reload();
+        }, 800);
+      } else {
+        label.innerText = "offline matrix active";
+        // Brief visual indicator flicker
+        const originalText = label.innerText;
+        label.innerText = "NO SIGNAL DETECTED";
+        setTimeout(() => {
+          label.innerText = originalText;
+        }, 1500);
+      }
+    }
+
+    // Direct click trigger
+    document.getElementById('retry-trigger').addEventListener('click', checkNetworkSignal);
+
+    // Watch system network parameters to auto-reconnect instantly
+    window.addEventListener('online', checkNetworkSignal);
+  </script>
+</body>
+</html>

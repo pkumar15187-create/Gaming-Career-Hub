@@ -1,4 +1,5 @@
 import React from 'react';
+import { getLocalAdConfig } from './AdManager';
 
 interface AdSenseSlotProps {
   /**
@@ -9,6 +10,13 @@ interface AdSenseSlotProps {
 }
 
 export default function AdSenseSlot({ slotType, className = "" }: AdSenseSlotProps) {
+  const config = getLocalAdConfig();
+
+  // Ads should be hidden until AdSense code is configured.
+  if (!config.adsenseEnabled || !config.adsenseClientId) {
+    return null;
+  }
+
   // Define standard responsive dimensions for each ad slot type
   const styleConfigs = {
     home: {
@@ -41,26 +49,13 @@ export default function AdSenseSlot({ slotType, className = "" }: AdSenseSlotPro
     }
   };
 
-  const config = styleConfigs[slotType];
+  const adConfig = styleConfigs[slotType];
 
   return (
     <div 
       id={`adsense-slot-${slotType}`}
-      className={`relative overflow-hidden bg-zinc-950/40 border border-dashed border-zinc-800 hover:border-zinc-700/80 p-3 rounded-xl flex flex-col items-center justify-center text-center transition-all ${config.dimensions} ${className}`}
+      className={`relative overflow-hidden bg-zinc-950/40 border border-dashed border-zinc-805 hover:border-zinc-700/80 p-3 rounded-xl flex flex-col items-center justify-center text-center transition-all ${adConfig.dimensions} ${className}`}
     >
-      {/* 
-        DEVELOPER DIRECTIVE: Replace this placeholder with Google AdSense code after approval.
-        Example script block:
-        <ins className="adsbygoogle"
-             style={{ display: 'block' }}
-             data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
-             data-ad-slot="XXXXXXXXXX"
-             data-ad-format="auto"
-             data-full-width-responsive="true"></ins>
-        <script>
-             (adsbygoogle = window.adsbygoogle || []).push({});
-        </script>
-      */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(244,63,94,0.02),transparent)] pointer-events-none"></div>
       
       <span className="text-[8px] font-mono font-black text-rose-500/60 uppercase tracking-widest bg-zinc-950/80 border border-zinc-900 px-2 py-0.5 rounded">
@@ -68,11 +63,11 @@ export default function AdSenseSlot({ slotType, className = "" }: AdSenseSlotPro
       </span>
       
       <p className="text-[10px] font-mono text-zinc-500 mt-1 uppercase">
-        {config.label}
+        {adConfig.label}
       </p>
 
       <span className="text-[8px] text-zinc-650 font-mono mt-0.5">
-        Awaiting AdSense Integration approval • Click to close preview
+        Client ID: {config.adsenseClientId} • Google AdSense Active
       </span>
     </div>
   );

@@ -1,0 +1,17 @@
+# Production Robots.txt for Gaming Career Hub (Google, Bing AdSense Optimized)
+User-agent: *
+Allow: /
+Allow: /#home
+Allow: /#profiles
+Allow: /#teams
+Allow: /#tournaments
+Allow: /#leaderboard
+Allow: /#badges
+Allow: /#sponsors
+
+# Prevent crawlers from indexing private dashboards or admin credentials
+Disallow: /#dashboard
+Disallow: /#admin-panel
+
+# References sitemap
+Sitemap: https://gamingcareerhub.com/sitemap.xml

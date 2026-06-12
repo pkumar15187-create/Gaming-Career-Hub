@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbTournamentRegistration } from './types';
+import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, DbTournamentRegistration, FeaturedItem } from './types';
 import {
   INITIAL_USERS,
   INITIAL_TEAMS,
@@ -22,6 +22,9 @@ import SponsorZone from './components/SponsorZone';
 import UserDashboard from './components/UserDashboard';
 import AdminPanel from './components/AdminPanel';
 import AdSenseSlot from './components/AdSenseSlot';
+import FeaturedPromotion from './components/FeaturedPromotion';
+import SEOManager from './components/SEOManager';
+import DownloadApp from './components/DownloadApp';
 import { supabaseService, setSupabaseServiceToastHandler, getFallbackUserProfile } from './lib/supabaseService';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
 
@@ -49,7 +52,8 @@ import {
   Info,
   Menu,
   X,
-  Plus
+  Plus,
+  Smartphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -62,6 +66,7 @@ export default function App() {
   const [notifications, setNotifications] = useState<Notification[]>(() => loadData('gh_notifications', INITIAL_NOTIFICATIONS));
   const [adminSettings, setAdminSettings] = useState<AdminSettings[]>(() => loadData('gh_admin_settings', [INITIAL_ADMIN_SETTINGS])) as any;
   const [registrations, setRegistrations] = useState<DbTournamentRegistration[]>(() => loadData('gh_tournament_registrations', []));
+  const [featuredItems, setFeaturedItems] = useState<FeaturedItem[]>([]);
 
   // Since we load adminSettings as array or single object safely
   const actualAdminSettings: AdminSettings = Array.isArray(adminSettings) ? adminSettings[0] || INITIAL_ADMIN_SETTINGS : adminSettings || INITIAL_ADMIN_SETTINGS;
@@ -121,6 +126,40 @@ export default function App() {
   };
 
 
+  const [showSplash, setShowSplash] = useState<boolean>(true);
+
+  // Register Sw safely with deduplication
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      const registerSW = async () => {
+        try {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          const hasRegistered = regs.some(r => r.active && r.active.scriptURL.includes('sw.js'));
+          if (!hasRegistered) {
+            const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+            console.log('[PWA SW] Successful service worker registration scope: ', reg.scope);
+          } else {
+            console.log('[PWA SW] Service worker already alive. Skipped registration to prevent conflicts.');
+          }
+        } catch (err) {
+          console.error('[PWA SW] registration failed: ', err);
+        }
+      };
+      
+      if (document.readyState === 'complete') {
+        registerSW();
+      } else {
+        window.addEventListener('load', registerSW);
+      }
+    }
+
+    const splashTime = setTimeout(() => {
+      setShowSplash(false);
+    }, 2200);
+
+    return () => clearTimeout(splashTime);
+  }, []);
+
   // Register the centralized supabase service toast callback to allow displaying DB sync toasts
   useEffect(() => {
     setSupabaseServiceToastHandler(addToast);
@@ -137,14 +176,15 @@ export default function App() {
     async function syncSupabaseDatabase() {
       try {
         setIsSessionChecking(true);
-        const [loadedUsers, loadedTeams, loadedTournaments, loadedSponsors, loadedNotifs, loadedSettings, loadedRegistrations] = await Promise.all([
+        const [loadedUsers, loadedTeams, loadedTournaments, loadedSponsors, loadedNotifs, loadedSettings, loadedRegistrations, loadedFeatured] = await Promise.all([
           supabaseService.getUsers(),
           supabaseService.getTeams(),
           supabaseService.getTournaments(),
           supabaseService.getSponsors(),
           supabaseService.getNotifications(),
           supabaseService.getAdminSettings(),
-          supabaseService.getTournamentRegistrations()
+          supabaseService.getTournamentRegistrations(),
+          supabaseService.getFeaturedItems()
         ]);
         setUsers(loadedUsers);
         setTeams(loadedTeams);
@@ -153,6 +193,7 @@ export default function App() {
         setNotifications(loadedNotifs);
         setAdminSettings([loadedSettings]);
         setRegistrations(loadedRegistrations);
+        setFeaturedItems(loadedFeatured);
 
         if (isSupabaseConfigured && supabase) {
           // On app load call supabase.auth.getSession() to resolve starting session
@@ -319,6 +360,44 @@ export default function App() {
     usersRef.current = users;
   }, [users]);
 
+  // Capture Referral code on mount
+  useEffect(() => {
+    const captureReferralCode = () => {
+      // 1. Check standard URL search parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      let ref = urlParams.get('ref');
+      
+      // 2. Check hash route query parameters
+      if (!ref) {
+        const hash = window.location.hash;
+        if (hash.includes('?')) {
+          const hashParams = new URLSearchParams(hash.split('?')[1]);
+          ref = hashParams.get('ref');
+        } else if (hash.includes('ref=')) {
+          const parts = hash.split('ref=');
+          if (parts[1]) {
+            ref = parts[1].split('&')[0];
+          }
+        }
+      }
+      
+      if (ref) {
+        const cleanRef = ref.trim().toUpperCase();
+        console.log("[Referral Engine] Captured referral invitation code:", cleanRef);
+        setReferredByCode(cleanRef);
+        
+        // Open register modal automatically to streamline user onboard experience
+        setAuthType('register');
+        setShowAuthModal(true);
+      }
+    };
+    
+    captureReferralCode();
+    
+    window.addEventListener('hashchange', captureReferralCode);
+    return () => window.removeEventListener('hashchange', captureReferralCode);
+  }, []);
+
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
@@ -351,6 +430,8 @@ export default function App() {
         setActiveSection('sponsors');
       } else if (hash === '#dashboard') {
         setActiveSection('dashboard');
+      } else if (hash === '#download' || hash === '#download-app' || hash === '#app') {
+        setActiveSection('download');
       }
     };
 
@@ -485,6 +566,16 @@ export default function App() {
         };
 
         const finalUser = await supabaseService.updateProfile(user.id, updatedUser);
+
+        // Capture referral track securely
+        if (referredByCode) {
+          const okRef = await supabaseService.registerReferral(user.id, referredByCode);
+          if (okRef) {
+            console.log("[Referral Engine] Referral linked successfully during register!");
+          } else {
+            console.warn("[Referral Engine] Referral code validation failed. Possibly invalid, duplicate or self-referral.");
+          }
+        }
 
         // Try logging the user in automatically back-to-back (vital if email verification is disabled)
         const loginRes = await supabaseService.login(regEmail, regPass || 'DefaultGamer@123');
@@ -1432,6 +1523,77 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0b0c10] text-[#f3f4f6] cyber-grid selection:bg-pink-500 selection:text-white pb-20 md:pb-0">
+      {/* Premium Animated Launcher Splash Screen (PART 3) */}
+      <AnimatePresence>
+        {showSplash && (
+          <motion.div
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5, ease: 'easeInOut' }}
+            className="fixed inset-0 z-[1000] flex flex-col items-center justify-center bg-[#07080a] text-center"
+          >
+            {/* Ambient backdrop glowing */}
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(239,68,68,0.1),transparent_70%)] animate-pulse" />
+            
+            <div className="relative space-y-6 max-w-sm px-6">
+              {/* Spinning gamepad shield */}
+              <motion.div
+                initial={{ scale: 0.8, rotate: -20, opacity: 0 }}
+                animate={{ scale: 1, rotate: 0, opacity: 1 }}
+                transition={{ duration: 0.8, ease: 'easeOut' }}
+                className="mx-auto w-24 h-24 rounded-3xl bg-gradient-to-tr from-rose-600 to-amber-600 p-0.5 flex items-center justify-center shadow-2xl shadow-rose-600/20"
+              >
+                <div className="w-full h-full rounded-[22px] bg-zinc-950 flex items-center justify-center">
+                  <Gamepad2 className="w-12 h-12 text-rose-500 animate-bounce" />
+                </div>
+              </motion.div>
+
+              <div className="space-y-2">
+                <motion.h2
+                  initial={{ y: 20, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: 0.3, duration: 0.5 }}
+                  className="text-2xl font-black tracking-widest text-white uppercase font-sans"
+                >
+                  GAMING <span className="text-rose-500">CAREER HUB</span>
+                </motion.h2>
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 0.6 }}
+                  transition={{ delay: 0.5 }}
+                  className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest"
+                >
+                  CALIBRATING NATIVE ASSETS MATRIX
+                </motion.p>
+              </div>
+
+              {/* Progress bar animation */}
+              <div className="relative w-48 h-1 bg-zinc-900 rounded-full mx-auto overflow-hidden border border-zinc-850">
+                <motion.div
+                  initial={{ left: '-100%' }}
+                  animate={{ left: '100%' }}
+                  transition={{ repeat: Infinity, duration: 1.5, ease: 'easeInOut' }}
+                  className="absolute top-0 bottom-0 w-2/3 bg-gradient-to-r from-rose-500 to-amber-500 rounded-full"
+                />
+              </div>
+
+              <span className="block text-[9px] text-zinc-650 font-mono">
+                SECURE HANDSHAKE: LIVE • COMPILING CORE BUILD
+              </span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Dynamic SEO, OG metadata, and analytics engine manager */}
+      <SEOManager
+        activeSection={activeSection}
+        users={users}
+        teams={teams}
+        tournaments={tournaments}
+        sponsors={sponsors}
+      />
+
       {/* Toast notifier container */}
       <Toast toasts={toasts} setToasts={setToasts} />
 
@@ -1505,6 +1667,7 @@ export default function App() {
                 >
                   Logout
                 </button>
+                <a href="#download" className={`hover:text-rose-400 transition-colors flex items-center gap-1.5 text-[10px] bg-rose-500/10 hover:bg-rose-500/20 px-2.5 py-1.5 rounded-lg border border-rose-500/10 ${activeSection === 'download' ? 'text-rose-500 font-extrabold border-rose-500/35' : 'text-zinc-400'}`}>📲 NATIVE APP</a>
               </>
             ) : (
               <>
@@ -1515,6 +1678,7 @@ export default function App() {
                 <a href="#leaderboard" className={`hover:text-rose-400 transition-colors ${activeSection === 'leaderboard' ? 'text-rose-500 font-extrabold' : 'text-zinc-400'}`}>GLOBAL STANDINGS</a>
                 <a href="#badges" className={`hover:text-rose-400 transition-colors ${activeSection === 'achievements' ? 'text-rose-500 font-extrabold' : 'text-zinc-400'}`}>BADGES CHEST</a>
                 <a href="#sponsors" className={`hover:text-rose-400 transition-colors ${activeSection === 'sponsors' ? 'text-rose-500 font-extrabold' : 'text-zinc-400'}`}>SPONSORS ZONE</a>
+                <a href="#download" className={`hover:text-rose-400 transition-colors flex items-center gap-1.5 text-[10px] bg-rose-500/10 hover:bg-rose-500/20 px-2.5 py-1.5 rounded-lg border border-rose-500/10 ${activeSection === 'download' ? 'text-rose-500 font-extrabold border-rose-500/35' : 'text-zinc-400'}`}>📲 NATIVE APP</a>
               </>
             )}
           </nav>
@@ -1634,6 +1798,26 @@ export default function App() {
                     <p className="text-[10px] text-zinc-500 uppercase mt-0.5 font-bold">Verified Scouting Brands</p>
                   </div>
                 </div>
+
+                {/* Featured players / clans / tournaments Carousels */}
+                <FeaturedPromotion
+                  featuredItems={featuredItems}
+                  users={users}
+                  teams={teams}
+                  tournaments={tournaments}
+                  onNavigateToUser={(userId) => {
+                    window.location.hash = '#profiles';
+                    setActiveSection('directory');
+                  }}
+                  onNavigateToTeam={(teamId) => {
+                    window.location.hash = '#teams';
+                    setActiveSection('teams');
+                  }}
+                  onNavigateToTournament={(tourney) => {
+                    window.location.hash = '#tournaments';
+                    setActiveSection('tournaments');
+                  }}
+                />
 
                 {/* Feature highlight cards */}
                 <div className="space-y-4">
@@ -1793,6 +1977,16 @@ export default function App() {
               </motion.div>
             )}
 
+            {activeSection === 'download' && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              >
+                <DownloadApp addToast={addToast} />
+              </motion.div>
+            )}
+
             {activeSection === 'dashboard' && currentUser && (
               <motion.div
                 initial={{ opacity: 0 }}
@@ -1930,6 +2124,14 @@ export default function App() {
           >
             <User className="w-4 h-4" />
             <span>Dashboard</span>
+          </button>
+
+          <button
+            onClick={() => { window.location.hash = '#download'; setActiveSection('download'); }}
+            className={`flex flex-col items-center gap-1.5 flex-1 ${activeSection === 'download' ? 'text-rose-500' : 'text-zinc-400'}`}
+          >
+            <Smartphone className="w-4 h-4" />
+            <span>App</span>
           </button>
         </nav>
       </div>

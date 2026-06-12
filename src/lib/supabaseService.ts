@@ -1,5 +1,5 @@
 import { supabase, isSupabaseConfigured } from './supabaseClient';
-import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, ProfileComment, DbPayment, DbTournamentRegistration, DbTournamentMatch, DiamondTransaction, WithdrawalRequest, TournamentResult } from '../types';
+import { UserProfile, Team, Tournament, SponsorApplication, Notification, AdminSettings, ProfileComment, DbPayment, DbTournamentRegistration, DbTournamentMatch, DiamondTransaction, WithdrawalRequest, TournamentResult, SubscriptionCancellationRequest, Sponsor, SponsorClick, Referral, PromoCode, PromoUsage, CreatorVerificationRequest, FeaturedItem, AdvertisementOrder, BannerAd, Invoice, AnalyticsEvent } from '../types';
 import { INITIAL_USERS, INITIAL_TEAMS, INITIAL_TOURNAMENTS, INITIAL_SPONSORS, INITIAL_NOTIFICATIONS, INITIAL_ADMIN_SETTINGS, loadData, saveData } from '../initialData';
 
 // Helper to generate IDs
@@ -34,41 +34,67 @@ export const setSupabaseServiceToastHandler = (cb: typeof toastCallback) => {
   toastCallback = cb;
 };
 
-export const getFallbackUserProfile = (userId: string): UserProfile => ({
-  id: userId,
-  username: 'gamer_' + userId.substring(0, 5),
-  email: 'gamer@example.com',
-  gamerName: 'Gamer Ready',
-  profilePhoto: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150&auto=format&fit=crop&q=80',
-  bio: 'Customize profile in dashboard.',
-  favoriteGames: [],
-  country: 'India',
-  state: '',
-  city: '',
-  social: {},
-  skillRating: 1500,
-  kdRatio: 1.0,
-  winRate: 50.0,
-  tournamentHistory: [],
-  teamHistory: [],
-  achievements: [],
-  badges: [],
-  highlightVideos: [],
-  isBanned: false,
-  isFeatured: false,
-  membership: 'Free',
-  membershipStatus: 'none',
-  referralCode: 'REFR' + Math.floor(Math.random() * 100),
-  savedPlayers: [],
-  stickers: [],
-  comments: [],
-  xp: 0,
-  level: 1,
-  diamonds: 0,
-  topup_diamonds: 0,
-  winning_diamonds: 0,
-  locked_withdraw_diamonds: 0
-});
+export const getOrGenerateReferralCode = (profReferralCode: string | undefined, userId: string, username_hint: string): string => {
+  if (profReferralCode && profReferralCode !== 'DEMO777' && profReferralCode.trim() !== '') {
+    return profReferralCode;
+  }
+  const base = (username_hint || 'GAMER').replace(/[^a-zA-Z0-9]/g, '').slice(0, 5).toUpperCase();
+  const rand = Math.floor(10000 + Math.random() * 90000);
+  const code = `${base}${rand}`;
+  // Save asynchronously to Supabase if configured
+  if (isSupabaseConfigured && supabase) {
+    supabase.from('gamer_profiles').update({ referral_code: code }).eq('user_id', userId).then(({ error }) => {
+      if (error) console.error("Auto-save of generated referral code failed:", error);
+    });
+  }
+  // Also save to localStorage
+  try {
+    const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+    const updated = localUsers.map(u => u.id === userId ? { ...u, referralCode: code } : u);
+    saveData('gh_users', updated);
+  } catch (err) {}
+  
+  return code;
+};
+
+export const getFallbackUserProfile = (userId: string): UserProfile => {
+  const code = 'GMR' + userId.substring(0, 4).toUpperCase() + Math.floor(10000 + Math.random() * 90000);
+  return {
+    id: userId,
+    username: 'gamer_' + userId.substring(0, 5),
+    email: 'gamer@example.com',
+    gamerName: 'Gamer Ready',
+    profilePhoto: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=150&auto=format&fit=crop&q=80',
+    bio: 'Customize profile in dashboard.',
+    favoriteGames: [],
+    country: 'India',
+    state: '',
+    city: '',
+    social: {},
+    skillRating: 1500,
+    kdRatio: 1.0,
+    winRate: 50.0,
+    tournamentHistory: [],
+    teamHistory: [],
+    achievements: [],
+    badges: [],
+    highlightVideos: [],
+    isBanned: false,
+    isFeatured: false,
+    membership: 'Free',
+    membershipStatus: 'none',
+    referralCode: code,
+    savedPlayers: [],
+    stickers: [],
+    comments: [],
+    xp: 0,
+    level: 1,
+    diamonds: 0,
+    topup_diamonds: 0,
+    winning_diamonds: 0,
+    locked_withdraw_diamonds: 0
+  };
+};
 
 export const supabaseService = {
   // ==========================================
@@ -307,7 +333,7 @@ export const supabaseService = {
             isFeatured: p.is_featured || false,
             membership: u.membership || 'Free',
             membershipStatus: p.membership_status || 'none',
-            referralCode: p.referral_code || 'DEMO777',
+            referralCode: getOrGenerateReferralCode(p.referral_code, u.id, u.username),
             savedPlayers: p.saved_players || [],
             xp: u.xp || 0,
             level: u.level || 1,
@@ -383,7 +409,7 @@ export const supabaseService = {
             isFeatured: prof.is_featured || false,
             membership: u.membership || 'Free',
             membershipStatus: prof.membership_status || 'none',
-            referralCode: prof.referral_code || 'DEMO777',
+            referralCode: getOrGenerateReferralCode(prof.referral_code, userId, u.username),
             savedPlayers: prof.saved_players || [],
             xp: u.xp || 0,
             level: u.level || 1,
@@ -450,7 +476,7 @@ export const supabaseService = {
               isFeatured: prof.is_featured || false,
               membership: uRetry.membership || 'Free',
               membershipStatus: prof.membership_status || 'none',
-              referralCode: prof.referral_code || 'DEMO777',
+              referralCode: getOrGenerateReferralCode(prof.referral_code, userId, uRetry.username),
               savedPlayers: prof.saved_players || [],
               xp: uRetry.xp || 0,
               level: uRetry.level || 1,
@@ -1525,6 +1551,33 @@ export const supabaseService = {
     return newPayment;
   },
 
+  // Retrieve all payments logs
+  async getAllPayments(): Promise<DbPayment[]> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('payments')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (!error && data) {
+          return data.map((p: any) => ({
+            id: p.id,
+            userId: p.user_id,
+            plan: p.plan,
+            amount: p.amount !== undefined ? Number(p.amount) : (p.plan === 'Silver' ? 19 : p.plan === 'Gold' ? 49 : 99),
+            transactionId: p.transaction_id || '',
+            status: p.status,
+            screenshotUrl: p.screenshot_url || '',
+            createdAt: p.created_at
+          }));
+        }
+      } catch (err) {
+        console.error("Failed fetching all payments from Supabase, loading local:", err);
+      }
+    }
+    return loadData<DbPayment[]>('gh_payments', []);
+  },
+
   // Retrieve pending payment logs
   async getPendingPayments(): Promise<DbPayment[]> {
     if (isSupabaseConfigured && supabase) {
@@ -1899,6 +1952,11 @@ export const supabaseService = {
       return u;
     });
     saveData('gh_users', updatedUsers);
+
+    // Activates membership, then check if this user was referred and award points securely
+    await this.processReferralRewardsOnMembership(userId).catch(err => {
+      console.error("Non-blocking referral rewarder error:", err);
+    });
 
     return { userId, plan: finalPlan };
   },
@@ -2854,8 +2912,8 @@ export const supabaseService = {
       throw new Error("Withdrawal request not found!");
     }
 
-    if (req.status === 'paid') {
-      throw new Error("Withdrawal request is already paid out!");
+    if (req.status === 'paid' || req.status === 'rejected') {
+      throw new Error("Withdrawal request is already paid or rejected!");
     }
 
     const nowStr = new Date().toISOString();
@@ -3048,6 +3106,1559 @@ export const supabaseService = {
       payment_screenshot_url: null,
       note: `Received ${amount} Diamonds from Top-up Transfer`
     });
+  },
+
+  async claimTrial(userId: string, plan: 'Gold' | 'Platinum'): Promise<UserProfile> {
+    const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+    const u = localUsers.find(x => x.id === userId);
+    if (!u) {
+      throw new Error("User profile not found.");
+    }
+    if (u.trial_used) {
+      throw new Error("You have already used your 7-day premium trial.");
+    }
+
+    const topup = u.topup_diamonds || 0;
+    if (topup < 5) {
+      throw new Error("7-day trial requires 5 Top-up Diamonds in your wallet. Please buy 5 diamonds or more first.");
+    }
+
+    const nextTopup = topup - 5;
+    const now = new Date();
+    const expiryDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    const trial_start = now.toISOString();
+    const trial_end = expiryDate.toISOString();
+
+    const updatedProfile: Partial<UserProfile> = {
+      membership: plan,
+      membershipStatus: 'active',
+      membershipExpires: trial_end,
+      topup_diamonds: nextTopup,
+      trial_used: true,
+      trial_start,
+      trial_end
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('users').update({
+          topup_diamonds: nextTopup,
+          membership: plan
+        }).eq('id', userId);
+
+        await supabase.from('gamer_profiles').update({
+          membership_status: 'active',
+          membership_expires: trial_end,
+          trial_used: true,
+          trial_start,
+          trial_end
+        }).eq('user_id', userId);
+      } catch (err) {
+        console.error("Supabase claimTrial failed:", err);
+      }
+    }
+
+    const updatedUsers = localUsers.map(x => {
+      if (x.id === userId) {
+        return {
+          ...x,
+          ...updatedProfile,
+          diamonds: nextTopup + (x.winning_diamonds || 0)
+        };
+      }
+      return x;
+    });
+    saveData('gh_users', updatedUsers);
+
+    await this.createDiamondTransaction({
+      user_id: userId,
+      wallet_type: 'topup',
+      transaction_type: 'topup_purchase',
+      diamonds: 5,
+      bonus: 0,
+      total_amount: -5,
+      price_paid: 5,
+      status: 'approved',
+      transaction_id: `trial-${plan.toLowerCase()}-${Date.now()}`,
+      payment_screenshot_url: null,
+      note: `Activated 7-Day trial of ${plan} Membership (Cost: 5 Diamonds)`
+    });
+
+    const refreshed = updatedUsers.find(x => x.id === userId)!;
+    return refreshed;
+  },
+
+  async claimTrialWithPaymentProof(userId: string, plan: 'Gold' | 'Platinum', transactionId: string, screenshotUrl: string | null): Promise<void> {
+    const newPayment: DbPayment = {
+      id: `p-${Date.now()}`,
+      userId,
+      userEmail: '',
+      plan: plan,
+      amount: 5,
+      transactionId,
+      status: 'pending',
+      screenshotUrl: screenshotUrl || undefined,
+      couponApplied: '7-DAY-TRIAL',
+      createdAt: new Date().toISOString()
+    };
+
+    const currentPays = loadData<DbPayment[]>('gh_payments_log', []);
+    saveData('gh_payments_log', [...currentPays, newPayment]);
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('payments').insert({
+          id: newPayment.id,
+          user_id: userId,
+          plan: plan,
+          amount: 5,
+          transaction_id: transactionId,
+          status: 'pending',
+          screenshot_url: screenshotUrl,
+          coupon_applied: '7-DAY-TRIAL'
+        });
+      } catch (err) {
+        console.error("Supabase insert pending trial payment failed:", err);
+      }
+    }
+  },
+
+  async getSubscriptionCancellations(): Promise<SubscriptionCancellationRequest[]> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('subscription_cancellations').select('*');
+        if (!error && data) {
+          return data.map((x: any) => ({
+            id: x.id,
+            user_id: x.user_id,
+            user_email: x.user_email || '',
+            plan: x.plan || 'Silver',
+            upi_id: x.upi_id || '',
+            qr_url: x.qr_url,
+            reason: x.reason || '',
+            status: x.status || 'pending',
+            admin_note: x.admin_note || '',
+            created_at: x.created_at
+          }));
+        }
+      } catch (e) {}
+    }
+    return loadData<SubscriptionCancellationRequest[]>('gh_subscription_cancellations', []);
+  },
+
+  async createSubscriptionCancellation(req: Omit<SubscriptionCancellationRequest, 'id' | 'status' | 'created_at' | 'admin_note'>): Promise<SubscriptionCancellationRequest> {
+    const id = `sc-${Date.now()}`;
+    const newReq: SubscriptionCancellationRequest = {
+      ...req,
+      id,
+      status: 'pending',
+      admin_note: null,
+      created_at: new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('subscription_cancellations').insert({
+          id,
+          user_id: req.user_id,
+          user_email: req.user_email,
+          plan: req.plan,
+          upi_id: req.upi_id,
+          qr_url: req.qr_url,
+          reason: req.reason,
+          status: 'pending'
+        });
+      } catch (err) {
+        console.error("Supabase subscription cancellation insertion failed:", err);
+      }
+    }
+
+    const currentLocal = loadData<SubscriptionCancellationRequest[]>('gh_subscription_cancellations', []);
+    saveData('gh_subscription_cancellations', [...currentLocal, newReq]);
+
+    return newReq;
+  },
+
+  async updateSubscriptionCancellationStatus(reqId: string, status: 'approved' | 'rejected', adminNote: string | null): Promise<void> {
+    const local = loadData<SubscriptionCancellationRequest[]>('gh_subscription_cancellations', []);
+    const requestItem = local.find(x => x.id === reqId);
+    if (!requestItem) {
+      throw new Error("Cancellation request not found.");
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('subscription_cancellations').update({
+          status,
+          admin_note: adminNote
+        }).eq('id', reqId);
+      } catch (e) {
+        console.error("Supabase failed to update subscription cancellation status:", e);
+      }
+    }
+
+    const updatedLocal = local.map(x => {
+      if (x.id === reqId) {
+        return { ...x, status, admin_note: adminNote };
+      }
+      return x;
+    });
+    saveData('gh_subscription_cancellations', updatedLocal);
+
+    if (status === 'approved') {
+      await this.updateProfile(requestItem.user_id, {
+        membership: 'Free',
+        membershipStatus: 'none',
+        membershipExpires: undefined,
+        isFeatured: false,
+        featuredUntil: undefined,
+        activeFrame: undefined,
+        activeBanner: undefined,
+        activeSticker: undefined
+      });
+
+      await this.addNotification({
+        userId: requestItem.user_id,
+        title: "Subscription Cancelled ❌",
+        message: "Your premium subscription has been cancelled per request. Premium status is revoked. Keep gaming!",
+        type: 'alert'
+      });
+    }
+  },
+
+  // ==========================================
+  // SPONSOR MARKETPLACE & ANALYTICS METHODS
+  // ==========================================
+  async getSponsorBrands(): Promise<Sponsor[]> {
+    const defaultSponsors: Sponsor[] = [
+      {
+        id: "sp-1",
+        company_name: "Intel Core Esports Division",
+        logo_url: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=200&auto=format&fit=crop&q=80",
+        website_url: "https://www.intel.com",
+        banner_url: "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=800&auto=format&fit=crop&q=80",
+        description: "Empowering athletes with high-end desktop gaming processor rigs.",
+        active: true,
+        start_date: "2026-01-01",
+        end_date: "2026-12-31",
+        created_at: new Date().toISOString(),
+        views: 1420,
+        clicks: 185
+      },
+      {
+        id: "sp-2",
+        company_name: "RedBull Gaming Academy",
+        logo_url: "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=200&auto=format&fit=crop&q=80",
+        website_url: "https://www.redbull.com",
+        banner_url: "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&auto=format&fit=crop&q=80",
+        description: "Fueling gaming performance across verified global bootcamps.",
+        active: true,
+        start_date: "2026-02-01",
+        end_date: "2026-11-30",
+        created_at: new Date().toISOString(),
+        views: 950,
+        clicks: 120
+      },
+      {
+        id: "sp-3",
+        company_name: "Asus ROG Elite Labs",
+        logo_url: "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=200&auto=format&fit=crop&q=80",
+        website_url: "https://rog.asus.com",
+        banner_url: "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=800&auto=format&fit=crop&q=80",
+        description: "Extreme gaming notebooks, mechanics, and peripherals designed for esports elites.",
+        active: true,
+        start_date: "2026-03-01",
+        end_date: "2026-12-25",
+        created_at: new Date().toISOString(),
+        views: 820,
+        clicks: 98
+      }
+    ];
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('sponsors').select('*');
+        if (!error && data && data.length > 0) {
+          return data.map((s: any) => ({
+            id: s.id,
+            company_name: s.company_name,
+            logo_url: s.logo_url || '',
+            website_url: s.website_url || '',
+            banner_url: s.banner_url || '',
+            description: s.description || '',
+            active: s.active !== undefined ? s.active : true,
+            start_date: s.start_date || '',
+            end_date: s.end_date || '',
+            created_at: s.created_at || '',
+            views: s.views || 0,
+            clicks: s.clicks || 0
+          }));
+        }
+      } catch (err) {
+        console.error("Failed to load sponsors from Supabase, loading local:", err);
+      }
+    }
+
+    const local = loadData<Sponsor[]>('gh_sponsors_marketplace', []);
+    if (local.length === 0) {
+      saveData('gh_sponsors_marketplace', defaultSponsors);
+      return defaultSponsors;
+    }
+    return local;
+  },
+
+  async createSponsor(sponsor: Omit<Sponsor, 'id' | 'created_at'>): Promise<Sponsor> {
+    const id = `sp-${Date.now()}`;
+    const newSponsor: Sponsor = {
+      ...sponsor,
+      id,
+      created_at: new Date().toISOString(),
+      views: 0,
+      clicks: 0
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('sponsors').insert({
+          id,
+          company_name: sponsor.company_name,
+          logo_url: sponsor.logo_url,
+          website_url: sponsor.website_url,
+          banner_url: sponsor.banner_url,
+          description: sponsor.description,
+          active: sponsor.active,
+          start_date: sponsor.start_date || null,
+          end_date: sponsor.end_date || null,
+          views: 0
+        });
+      } catch (err) {
+        console.error("Failed to insert sponsor to Supabase:", err);
+      }
+    }
+
+    const local = loadData<Sponsor[]>('gh_sponsors_marketplace', []);
+    saveData('gh_sponsors_marketplace', [...local, newSponsor]);
+    return newSponsor;
+  },
+
+  async updateSponsor(sponsorId: string, updates: Partial<Sponsor>): Promise<Sponsor> {
+    const local = loadData<Sponsor[]>('gh_sponsors_marketplace', []);
+    const existing = local.find(s => s.id === sponsorId);
+    if (!existing) {
+      throw new Error(`Sponsor with ID ${sponsorId} not found.`);
+    }
+
+    const updated: Sponsor = {
+      ...existing,
+      ...updates
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const dbUpdates: any = {};
+        if (updates.company_name !== undefined) dbUpdates.company_name = updates.company_name;
+        if (updates.logo_url !== undefined) dbUpdates.logo_url = updates.logo_url;
+        if (updates.website_url !== undefined) dbUpdates.website_url = updates.website_url;
+        if (updates.banner_url !== undefined) dbUpdates.banner_url = updates.banner_url;
+        if (updates.description !== undefined) dbUpdates.description = updates.description;
+        if (updates.active !== undefined) dbUpdates.active = updates.active;
+        if (updates.start_date !== undefined) dbUpdates.start_date = updates.start_date || null;
+        if (updates.end_date !== undefined) dbUpdates.end_date = updates.end_date || null;
+        if (updates.views !== undefined) dbUpdates.views = updates.views;
+        if (updates.clicks !== undefined) dbUpdates.clicks = updates.clicks;
+
+        await supabase.from('sponsors').update(dbUpdates).eq('id', sponsorId);
+      } catch (err) {
+        console.error("Failed to update sponsor in Supabase:", err);
+      }
+    }
+
+    const updatedLocal = local.map(s => {
+      if (s.id === sponsorId) return updated;
+      return s;
+    });
+    saveData('gh_sponsors_marketplace', updatedLocal);
+    return updated;
+  },
+
+  async deleteSponsor(sponsorId: string): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('sponsors').delete().eq('id', sponsorId);
+      } catch (err) {
+        console.error("Failed to delete sponsor from Supabase:", err);
+      }
+    }
+
+    const local = loadData<Sponsor[]>('gh_sponsors_marketplace', []);
+    const filtered = local.filter(s => s.id !== sponsorId);
+    saveData('gh_sponsors_marketplace', filtered);
+  },
+
+  async recordSponsorView(sponsorId: string): Promise<void> {
+    const local = loadData<Sponsor[]>('gh_sponsors_marketplace', []);
+    const existing = local.find(s => s.id === sponsorId);
+    if (existing) {
+      existing.views = (existing.views || 0) + 1;
+      saveData('gh_sponsors_marketplace', local);
+
+      if (isSupabaseConfigured && supabase) {
+        try {
+          await supabase.from('sponsors').update({ views: existing.views }).eq('id', sponsorId);
+        } catch (e) {}
+      }
+    }
+  },
+
+  async recordSponsorClick(sponsorId: string, userId: string | null): Promise<void> {
+    const local = loadData<Sponsor[]>('gh_sponsors_marketplace', []);
+    const existing = local.find(s => s.id === sponsorId);
+    if (existing) {
+      existing.clicks = (existing.clicks || 0) + 1;
+      saveData('gh_sponsors_marketplace', local);
+
+      if (isSupabaseConfigured && supabase) {
+        try {
+          await supabase.from('sponsors').update({ clicks: existing.clicks }).eq('id', sponsorId);
+          await supabase.from('sponsor_clicks').insert({
+            sponsor_id: sponsorId,
+            user_id: userId,
+            clicked_at: new Date().toISOString()
+          });
+        } catch (e) {
+          console.error("Failed to record sponsor click in Supabase:", e);
+        }
+      }
+    }
+
+    const clicksLocal = loadData<SponsorClick[]>('gh_sponsor_clicks', []);
+    clicksLocal.push({
+      id: `clk-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      sponsor_id: sponsorId,
+      user_id: userId,
+      clicked_at: new Date().toISOString()
+    });
+    saveData('gh_sponsor_clicks', clicksLocal);
+  },
+
+  async getSponsorClicks(): Promise<SponsorClick[]> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('sponsor_clicks').select('*');
+        if (!error && data) {
+          return data;
+        }
+      } catch (err) {}
+    }
+    return loadData<SponsorClick[]>('gh_sponsor_clicks', []);
+  },
+
+  async registerReferral(referredUserId: string, referralCode: string): Promise<boolean> {
+    if (!referralCode) return false;
+    const cleanCode = referralCode.trim().toUpperCase();
+    
+    // Find who owns the code
+    let referrer: UserProfile | null = null;
+    
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data: prof, error } = await supabase
+          .from('gamer_profiles')
+          .select('user_id')
+          .eq('referral_code', cleanCode)
+          .maybeSingle();
+        if (prof && prof.user_id) {
+          referrer = await this.getUserProfileById(prof.user_id);
+        }
+      } catch (err) {
+        console.error("Error finding referrer in DB:", err);
+      }
+    }
+    
+    if (!referrer) {
+      const users = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+      const found = users.find(u => u.referralCode?.toUpperCase() === cleanCode);
+      if (found) referrer = found;
+    }
+    
+    if (!referrer) {
+      console.warn("Referrer code not found in any profile.");
+      return false;
+    }
+    
+    // Prevent self-referral
+    if (referrer.id === referredUserId) {
+      console.warn("Self-referral is forbidden.");
+      return false;
+    }
+    
+    // Check if duplicate referral already registered for this referred user
+    let alreadyReferred = false;
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('referrals')
+          .select('id')
+          .eq('referred_user_id', referredUserId)
+          .maybeSingle();
+        if (data) alreadyReferred = true;
+      } catch (e) {
+        console.error("Error checking referrals duplicate in DB:", e);
+      }
+    } else {
+      const referrals = loadData<any[]>('gh_referrals', []);
+      alreadyReferred = referrals.some(r => r.referred_user_id === referredUserId);
+    }
+    
+    if (alreadyReferred) {
+      console.warn("Referral already registered for this user.");
+      return false;
+    }
+    
+    // Link new user's profile
+    await this.updateProfile(referredUserId, {
+      referredBy: referrer.id,
+      referredByCode: cleanCode,
+      referred_by_code: cleanCode
+    });
+    
+    // Create referral log
+    const refId = generateUUID();
+    const newRef = {
+      id: refId,
+      referrer_user_id: referrer.id,
+      referred_user_id: referredUserId,
+      referral_code: cleanCode,
+      reward_status: 'pending' as const,
+      inviter_reward_diamonds: 50,
+      referred_reward_diamonds: 20,
+      created_at: new Date().toISOString()
+    };
+    
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { error } = await supabase
+          .from('referrals')
+          .insert([newRef]);
+        if (error) {
+          console.error("Failed to insert referral row in DB:", error);
+        }
+      } catch (err) {
+        console.error("Database referral log insert failed:", err);
+      }
+    }
+    
+    // Save to local storage anyway for synchronization
+    const referrals = loadData<any[]>('gh_referrals', []);
+    referrals.push(newRef);
+    saveData('gh_referrals', referrals);
+    
+    return true;
+  },
+
+  async processReferralRewardsOnMembership(userId: string): Promise<void> {
+    console.log(`[Referral Rewarder] Checking referral status for user id: ${userId}`);
+    let pendingRef: Referral | null = null;
+    
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('referrals')
+          .select('*')
+          .eq('referred_user_id', userId)
+          .eq('reward_status', 'pending')
+          .maybeSingle();
+        if (data) {
+          pendingRef = {
+            id: data.id,
+            referrer_user_id: data.referrer_user_id,
+            referred_user_id: data.referred_user_id,
+            referral_code: data.referral_code,
+            reward_status: data.reward_status,
+            inviter_reward_diamonds: Number(data.inviter_reward_diamonds || 50),
+            referred_reward_diamonds: Number(data.referred_reward_diamonds || 20),
+            created_at: data.created_at,
+            rewarded_at: data.rewarded_at
+          };
+        }
+      } catch (err) {
+        console.error("Error finding pending referral in database:", err);
+      }
+    }
+    
+    if (!pendingRef) {
+      const refs = loadData<Referral[]>('gh_referrals', []);
+      const ref = refs.find(r => r.referred_user_id === userId && r.reward_status === 'pending');
+      if (ref) pendingRef = ref;
+    }
+    
+    if (!pendingRef) {
+      console.log(`[Referral Rewarder] User ${userId} is not part of a pending referral.`);
+      return;
+    }
+    
+    const referrerId = pendingRef.referrer_user_id;
+    const inviterBonus = pendingRef.inviter_reward_diamonds || 50;
+    const referredBonus = pendingRef.referred_reward_diamonds || 20;
+    
+    console.log(`[Referral Rewarder] Referral found! Inviter: ${referrerId} (+${inviterBonus} winning), New User: ${userId} (+${referredBonus} topup)`);
+    
+    const rewardedAt = new Date().toISOString();
+    
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase
+          .from('referrals')
+          .update({
+            reward_status: 'rewarded',
+            rewarded_at: rewardedAt
+          })
+          .eq('id', pendingRef.id);
+        
+        const { data: refUser } = await supabase.from('users').select('winning_diamonds').eq('id', referrerId).maybeSingle();
+        const currentRefWin = refUser ? Number(refUser.winning_diamonds || 0) : 0;
+        await supabase.from('users').update({ winning_diamonds: currentRefWin + inviterBonus }).eq('id', referrerId);
+        
+        const { data: refdUser } = await supabase.from('users').select('topup_diamonds').eq('id', userId).maybeSingle();
+        const currentRefdTop = refdUser ? Number(refdUser.topup_diamonds || 0) : 0;
+        await supabase.from('users').update({ topup_diamonds: currentRefdTop + referredBonus }).eq('id', userId);
+      } catch (err) {
+        console.error("[Referral Rewarder] Error updating reward state in database:", err);
+      }
+    }
+    
+    const localUsers = loadData<UserProfile[]>('gh_users', INITIAL_USERS);
+    const updatedUsers = localUsers.map(u => {
+      if (u.id === referrerId) {
+        const nextWin = (u.winning_diamonds || 0) + inviterBonus;
+        return {
+          ...u,
+          winning_diamonds: nextWin,
+          diamonds: (u.topup_diamonds || 0) + nextWin
+        };
+      }
+      if (u.id === userId) {
+        const nextTop = (u.topup_diamonds || 0) + referredBonus;
+        return {
+          ...u,
+          topup_diamonds: nextTop,
+          diamonds: nextTop + (u.winning_diamonds || 0)
+        };
+      }
+      return u;
+    });
+    saveData('gh_users', updatedUsers);
+    
+    const localRefs = loadData<Referral[]>('gh_referrals', []);
+    const updatedRefs = localRefs.map(r => r.id === pendingRef!.id ? { ...r, reward_status: 'rewarded' as const, rewarded_at: rewardedAt } : r);
+    saveData('gh_referrals', updatedRefs);
+    
+    await this.createDiamondTransaction({
+      user_id: referrerId,
+      wallet_type: 'winning',
+      transaction_type: 'referral_reward' as any,
+      diamonds: inviterBonus,
+      bonus: 0,
+      total_amount: 0,
+      price_paid: 0,
+      status: 'approved',
+      transaction_id: 'REF-INV-' + pendingRef.id.slice(0, 8).toUpperCase(),
+      payment_screenshot_url: null,
+      note: 'Referral reward for inviting user profile ' + userId
+    });
+    
+    await this.createDiamondTransaction({
+      user_id: userId,
+      wallet_type: 'topup',
+      transaction_type: 'referral_signup_bonus' as any,
+      diamonds: referredBonus,
+      bonus: 0,
+      total_amount: 0,
+      price_paid: 0,
+      status: 'approved',
+      transaction_id: 'REF-NEW-' + pendingRef.id.slice(0, 8).toUpperCase(),
+      payment_screenshot_url: null,
+      note: 'Referral signup reward using code ' + pendingRef.referral_code
+    });
+    
+    console.log("[Referral Rewarder] Diamond transactions logged and balances successfully credited!");
+  },
+
+  async validatePromoCode(
+    code: string,
+    userId: string,
+    context: 'membership' | 'diamond_purchase' | 'tournament_entry',
+    originalAmount: number
+  ): Promise<{ isValid: boolean; message: string; discountAmount: number; finalAmount: number; promo?: PromoCode }> {
+    const cleanCode = code.trim().toUpperCase();
+    let promos: PromoCode[] = [];
+    
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('promo_codes').select('*');
+        if (data) {
+          promos = data.map(d => ({
+            id: d.id,
+            code: d.code,
+            discount_type: d.discount_type,
+            discount_value: Number(d.discount_value),
+            applies_to: d.applies_to,
+            usage_limit: Number(d.usage_limit || 0),
+            used_count: Number(d.used_count || 0),
+            active: d.active,
+            start_date: d.start_date,
+            end_date: d.end_date,
+            created_at: d.created_at
+          }));
+        }
+      } catch (err) {
+        console.error("Error reading db promo codes:", err);
+      }
+    }
+    
+    const localPromos = loadData<PromoCode[]>('gh_promo_codes', []);
+    if (promos.length === 0) {
+      promos = localPromos;
+    }
+    
+    const promo = promos.find(p => p.code.toUpperCase() === cleanCode);
+    if (!promo) {
+      return { isValid: false, message: "Invalid promo code.", discountAmount: 0, finalAmount: originalAmount };
+    }
+    
+    if (!promo.active) {
+      return { isValid: false, message: "This promo code is currently inactive.", discountAmount: 0, finalAmount: originalAmount };
+    }
+    
+    const nowStr = new Date().toISOString().split('T')[0];
+    if (promo.start_date && nowStr < promo.start_date) {
+      return { isValid: false, message: "This promo campaign has not started yet.", discountAmount: 0, finalAmount: originalAmount };
+    }
+    if (promo.end_date && nowStr > promo.end_date) {
+      return { isValid: false, message: "This promo code has expired.", discountAmount: 0, finalAmount: originalAmount };
+    }
+    
+    if (promo.used_count >= promo.usage_limit) {
+      return { isValid: false, message: "Usage limit reached for this promo code.", discountAmount: 0, finalAmount: originalAmount };
+    }
+    
+    if (promo.applies_to !== 'all' && promo.applies_to !== context) {
+      return { isValid: false, message: `This promo cannot be applied to ${context.replace('_', ' ')}.`, discountAmount: 0, finalAmount: originalAmount };
+    }
+    
+    let discount = 0;
+    if (promo.discount_type === 'flat') {
+      discount = promo.discount_value;
+    } else {
+      discount = Math.floor((originalAmount * promo.discount_value) / 100);
+    }
+    
+    if (discount < 0) discount = 0;
+    const finalAmount = Math.max(0, originalAmount - discount);
+    
+    return {
+      isValid: true,
+      message: `Success! Applicable discount of ₹${discount} is verified.`,
+      discountAmount: discount,
+      finalAmount,
+      promo
+    };
+  },
+
+  async executePromoUsage(
+    code: string,
+    userId: string,
+    context: 'membership' | 'diamond_purchase' | 'tournament_entry',
+    originalAmount: number
+  ): Promise<{ status: 'success' | 'failed'; discountAmount: number; finalAmount: number }> {
+    const valResult = await this.validatePromoCode(code, userId, context, originalAmount);
+    if (!valResult.isValid || !valResult.promo) {
+      return { status: 'failed', discountAmount: 0, finalAmount: originalAmount };
+    }
+    
+    const promo = valResult.promo;
+    const nextUsedCount = promo.used_count + 1;
+    
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase
+          .from('promo_codes')
+          .update({ used_count: nextUsedCount })
+          .eq('id', promo.id);
+      } catch (err) {
+        console.error("DB fail updating promo count:", err);
+      }
+    }
+    
+    const localPromos = loadData<PromoCode[]>('gh_promo_codes', []);
+    const updatedLocalPromos = localPromos.map(p => p.id === promo.id ? { ...p, used_count: nextUsedCount } : p);
+    saveData('gh_promo_codes', updatedLocalPromos);
+    
+    const usageId = generateUUID();
+    const newUsage: PromoUsage = {
+      id: usageId,
+      promo_code_id: promo.id,
+      user_id: userId,
+      context,
+      discount_amount: valResult.discountAmount,
+      original_amount: originalAmount,
+      final_amount: valResult.finalAmount,
+      created_at: new Date().toISOString(),
+      promo_code: promo.code
+    };
+    
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase
+          .from('promo_usage')
+          .insert([newUsage]);
+      } catch (err) {
+        console.error("DB fail inserting promo usage log:", err);
+      }
+    }
+    
+    const usages = loadData<PromoUsage[]>('gh_promo_usage', []);
+    usages.push(newUsage);
+    saveData('gh_promo_usage', usages);
+    
+    return {
+      status: 'success',
+      discountAmount: valResult.discountAmount,
+      finalAmount: valResult.finalAmount
+    };
+  },
+
+  async getPromoCodes(): Promise<PromoCode[]> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('promo_codes').select('*');
+        if (!error && data) {
+          return data.map(d => ({
+            id: d.id,
+            code: d.code,
+            discount_type: d.discount_type,
+            discount_value: Number(d.discount_value),
+            applies_to: d.applies_to,
+            usage_limit: Number(d.usage_limit || 0),
+            used_count: Number(d.used_count || 0),
+            active: d.active,
+            start_date: d.start_date,
+            end_date: d.end_date,
+            created_at: d.created_at
+          }));
+        }
+      } catch (err) {
+        console.error("DB query promo codes failed:", err);
+      }
+    }
+    return loadData<PromoCode[]>('gh_promo_codes', []);
+  },
+
+  async createPromoCode(promo: Omit<PromoCode, 'id' | 'used_count' | 'created_at'>): Promise<PromoCode> {
+    const newPromo: PromoCode = {
+      id: generateUUID(),
+      ...promo,
+      used_count: 0,
+      created_at: new Date().toISOString()
+    };
+    
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('promo_codes').insert([newPromo]);
+      } catch (err) {
+        console.error("DB error inserting promo code:", err);
+      }
+    }
+    
+    const list = loadData<PromoCode[]>('gh_promo_codes', []);
+    list.push(newPromo);
+    saveData('gh_promo_codes', list);
+    return newPromo;
+  },
+
+  async updatePromoCode(id: string, updates: Partial<PromoCode>): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('promo_codes').update(updates).eq('id', id);
+      } catch (err) {
+        console.error("DB error updating promo code:", err);
+      }
+    }
+    
+    const list = loadData<PromoCode[]>('gh_promo_codes', []);
+    const idx = list.findIndex(p => p.id === id);
+    if (idx !== -1) {
+      list[idx] = { ...list[idx], ...updates };
+      saveData('gh_promo_codes', list);
+    }
+  },
+
+  async deletePromoCode(id: string): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('promo_codes').delete().eq('id', id);
+      } catch (err) {
+        console.error("DB error deleting promo code:", err);
+      }
+    }
+    
+    const list = loadData<PromoCode[]>('gh_promo_codes', []);
+    const filtered = list.filter(p => p.id !== id);
+    saveData('gh_promo_codes', filtered);
+  },
+
+  async getPromoUsageList(): Promise<PromoUsage[]> {
+    let list: PromoUsage[] = [];
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('promo_usage').select('*');
+        if (!error && data) {
+          list = data.map(d => ({
+            id: d.id,
+            promo_code_id: d.promo_code_id,
+            user_id: d.user_id,
+            context: d.context,
+            discount_amount: Number(d.discount_amount),
+            original_amount: Number(d.original_amount),
+            final_amount: Number(d.final_amount),
+            created_at: d.created_at
+          }));
+        }
+      } catch (err) {
+        console.error("DB error listing promo usages:", err);
+      }
+    }
+    
+    if (list.length === 0) {
+      list = loadData<PromoUsage[]>('gh_promo_usage', []);
+    }
+    
+    const usersList = await this.getUsers();
+    const promosList = await this.getPromoCodes();
+    
+    return list.map(item => {
+      const u = usersList.find(x => x.id === item.user_id);
+      const p = promosList.find(x => x.id === item.promo_code_id);
+      return {
+        ...item,
+        promo_code: p ? p.code : item.promo_code || 'PROMO',
+        gamer_name: u ? u.gamerName : 'Unknown Gamer',
+        user_email: u ? u.email : 'unknown@domain.com'
+      };
+    });
+  },
+
+  async getReferrals(): Promise<Referral[]> {
+    let list: Referral[] = [];
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('referrals').select('*');
+        if (!error && data) {
+          list = data.map(d => ({
+            id: d.id,
+            referrer_user_id: d.referrer_user_id,
+            referred_user_id: d.referred_user_id,
+            referral_code: d.referral_code,
+            reward_status: d.reward_status,
+            inviter_reward_diamonds: Number(d.inviter_reward_diamonds),
+            referred_reward_diamonds: Number(d.referred_reward_diamonds),
+            created_at: d.created_at,
+            rewarded_at: d.rewarded_at
+          }));
+        }
+      } catch (err) {
+        console.error("DB error reading referrals list:", err);
+      }
+    }
+    
+    if (list.length === 0) {
+      list = loadData<Referral[]>('gh_referrals', []);
+    }
+    
+    const usersList = await this.getUsers();
+    
+    return list.map(item => {
+      const inviter = usersList.find(u => u.id === item.referrer_user_id);
+      const referred = usersList.find(u => u.id === item.referred_user_id);
+      return {
+        ...item,
+        referrerName: inviter ? inviter.gamerName : 'Unknown Admin',
+        referredName: referred ? referred.gamerName : 'Unknown Athlete'
+      };
+    });
+  },
+
+  async getCreatorVerificationRequests(): Promise<CreatorVerificationRequest[]> {
+    let list: CreatorVerificationRequest[] = [];
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('creator_verification_requests').select('*');
+        if (!error && data) {
+          list = data.map(d => ({
+            id: d.id,
+            user_id: d.user_id,
+            real_name: d.real_name,
+            creator_name: d.creator_name,
+            youtube_link: d.youtube_link,
+            instagram_link: d.instagram_link,
+            discord_link: d.discord_link,
+            uid: d.uid,
+            description_text: d.description_text,
+            proof_url: d.proof_url,
+            status: d.status,
+            admin_notes: d.admin_notes,
+            created_at: d.created_at,
+            updated_at: d.updated_at,
+            type: d.type
+          }));
+        }
+      } catch (err) {
+        console.error("DB error reading verifications:", err);
+      }
+    }
+    if (list.length === 0) {
+      list = loadData<CreatorVerificationRequest[]>('gh_creator_verification_requests', []);
+    }
+    const usersList = await this.getUsers();
+    return list.map(item => {
+      const u = usersList.find(x => x.id === item.user_id);
+      return {
+        ...item,
+        gamer_name: u ? u.gamerName : 'Unknown Gamer',
+        user_email: u ? u.email : 'unknown@domain.com'
+      };
+    });
+  },
+
+  async submitCreatorVerificationRequest(req: Omit<CreatorVerificationRequest, 'id' | 'created_at' | 'status'>): Promise<CreatorVerificationRequest> {
+    const newReq: CreatorVerificationRequest = {
+      ...req,
+      id: 'ver_' + Math.random().toString(36).substr(2, 9),
+      created_at: new Date().toISOString(),
+      status: 'pending'
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('creator_verification_requests').insert({
+          id: newReq.id,
+          user_id: newReq.user_id,
+          real_name: newReq.real_name,
+          creator_name: newReq.creator_name,
+          youtube_link: newReq.youtube_link,
+          instagram_link: newReq.instagram_link,
+          discord_link: newReq.discord_link,
+          uid: newReq.uid,
+          description_text: newReq.description_text,
+          proof_url: newReq.proof_url,
+          status: newReq.status,
+          type: newReq.type
+        });
+      } catch (err) {
+        console.error("DB error saving verification request:", err);
+      }
+    }
+    
+    const list = loadData<CreatorVerificationRequest[]>('gh_creator_verification_requests', []);
+    const filteredList = list.filter(r => !(r.user_id === req.user_id && r.status === 'pending'));
+    filteredList.push(newReq);
+    saveData('gh_creator_verification_requests', filteredList);
+    
+    await this.trackAnalyticsEvent('user_active', req.user_id, newReq.id, `Verification request submitted: ${req.type}`);
+    
+    return newReq;
+  },
+
+  async updateCreatorVerificationStatus(id: string, status: CreatorVerificationRequest['status'], adminNotes?: string): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('creator_verification_requests').update({
+          status,
+          admin_notes: adminNotes,
+          updated_at: new Date().toISOString()
+        }).eq('id', id);
+      } catch (err) {
+        console.error("DB error updating verification:", err);
+      }
+    }
+
+    const list = loadData<CreatorVerificationRequest[]>('gh_creator_verification_requests', []);
+    const idx = list.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      list[idx].status = status;
+      list[idx].admin_notes = adminNotes;
+      list[idx].updated_at = new Date().toISOString();
+      saveData('gh_creator_verification_requests', list);
+
+      if (status === 'approved') {
+        const reqObj = list[idx];
+        await this.updateUserVerificationFlag(reqObj.user_id, true, reqObj.type);
+      } else if (status === 'rejected' || status === 'changes_requested') {
+        const reqObj = list[idx];
+        await this.updateUserVerificationFlag(reqObj.user_id, false, null);
+      }
+    }
+  },
+
+  async updateUserVerificationFlag(userId: string, isVerified: boolean, verifiedType: CreatorVerificationRequest['type'] | null): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('users').update({
+          is_verified: isVerified,
+          verified_type: verifiedType
+        }).eq('id', userId);
+      } catch (err) {
+        console.error("DB error updating user details:", err);
+      }
+    }
+
+    const users = await this.getUsers();
+    const userIdx = users.findIndex(u => u.id === userId);
+    if (userIdx !== -1) {
+      users[userIdx].is_verified = isVerified;
+      users[userIdx].verified_type = verifiedType;
+      saveData('gh_users_list', users);
+      const savedUser = localStorage.getItem('gh_current_user');
+      if (savedUser) {
+        try {
+          const cu = JSON.parse(savedUser) as UserProfile;
+          if (cu.id === userId) {
+            cu.is_verified = isVerified;
+            cu.verified_type = verifiedType;
+            localStorage.setItem('gh_current_user', JSON.stringify(cu));
+          }
+        } catch (e) {}
+      }
+    }
+  },
+
+  async getFeaturedItems(): Promise<FeaturedItem[]> {
+    let list: FeaturedItem[] = [];
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('featured_items').select('*');
+        if (!error && data) {
+          list = data;
+        }
+      } catch (err) {
+        console.error("DB error reading featured items:", err);
+      }
+    }
+    if (list.length === 0) {
+      list = loadData<FeaturedItem[]>('gh_featured_items', []);
+    }
+    return list;
+  },
+
+  async addFeaturedItem(item: Omit<FeaturedItem, 'id' | 'created_at'>): Promise<FeaturedItem> {
+    const newItem: FeaturedItem = {
+      ...item,
+      id: 'feat_' + Math.random().toString(36).substr(2, 9),
+      created_at: new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('featured_items').insert(newItem);
+      } catch (err) {
+        console.error("DB error creating featured item:", err);
+      }
+    }
+
+    const list = loadData<FeaturedItem[]>('gh_featured_items', []);
+    const filtered = list.filter(x => !(x.item_type === item.item_type && x.item_id === item.item_id));
+    filtered.push(newItem);
+    saveData('gh_featured_items', filtered);
+    return newItem;
+  },
+
+  async removeFeaturedItem(id: string): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('featured_items').delete().eq('id', id);
+      } catch (err) {
+        console.error("DB error removing featured item:", err);
+      }
+    }
+    const list = loadData<FeaturedItem[]>('gh_featured_items', []);
+    const filtered = list.filter(item => item.id !== id);
+    saveData('gh_featured_items', filtered);
+  },
+
+  async getAdvertisementOrders(): Promise<AdvertisementOrder[]> {
+    let list: AdvertisementOrder[] = [];
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('advertisement_orders').select('*');
+        if (!error && data) {
+          list = data;
+        }
+      } catch (err) {
+        console.error("DB error reading ads:", err);
+      }
+    }
+    if (list.length === 0) {
+      list = loadData<AdvertisementOrder[]>('gh_advertisement_orders', []);
+    }
+    const usersList = await this.getUsers();
+    return list.map(item => {
+      const u = usersList.find(x => x.id === item.user_id);
+      return {
+        ...item,
+        gamer_name: u ? u.gamerName : 'Unknown Advertiser',
+        user_email: u ? u.email : 'billing@industry.org'
+      };
+    });
+  },
+
+  async createAdvertisementOrder(order: Omit<AdvertisementOrder, 'id' | 'created_at' | 'status' | 'views' | 'clicks'>): Promise<AdvertisementOrder> {
+    const newOrder: AdvertisementOrder = {
+      ...order,
+      id: 'ad_' + Math.random().toString(36).substr(2, 9),
+      created_at: new Date().toISOString(),
+      status: 'pending',
+      views: 0,
+      clicks: 0
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('advertisement_orders').insert({
+          id: newOrder.id,
+          user_id: newOrder.user_id,
+          ad_type: newOrder.ad_type,
+          target_id: newOrder.target_id,
+          banner_url: newOrder.banner_url,
+          plan: newOrder.plan,
+          amount: newOrder.amount,
+          transaction_id: newOrder.transaction_id,
+          payment_screenshot_url: newOrder.payment_screenshot_url,
+          status: newOrder.status,
+          views: 0,
+          clicks: 0
+        });
+      } catch (err) {
+        console.error("DB error saving ad order:", err);
+      }
+    }
+
+    const list = loadData<AdvertisementOrder[]>('gh_advertisement_orders', []);
+    list.push(newOrder);
+    saveData('gh_advertisement_orders', list);
+    return newOrder;
+  },
+
+  async updateAdOrderStatus(id: string, status: 'approved' | 'rejected'): Promise<void> {
+    const list = loadData<AdvertisementOrder[]>('gh_advertisement_orders', []);
+    const idx = list.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      const days = list[idx].plan === '1_day' ? 1 : list[idx].plan === '7_days' ? 7 : 30;
+      const start = new Date();
+      const end = new Date();
+      end.setDate(start.getDate() + days);
+
+      list[idx].status = status;
+      if (status === 'approved') {
+        list[idx].start_date = start.toISOString();
+        list[idx].end_date = end.toISOString();
+        list[idx].approved_at = new Date().toISOString();
+
+        await this.createInvoice({
+          user_id: list[idx].user_id,
+          amount: list[idx].amount,
+          status: 'paid',
+          description: `Self Ad Campaign (${list[idx].plan.replace('_', ' ')}) for ${list[idx].ad_type}`,
+          item_type: 'advertisement_purchase',
+          billing_name: list[idx].gamer_name || 'Advertiser Partner',
+          billing_email: list[idx].user_email || 'partner@esports.com'
+        });
+
+        await this.trackAnalyticsEvent('ad_view', list[idx].user_id, id, `Ad campaign became active: ${list[idx].ad_type}`);
+      }
+      saveData('gh_advertisement_orders', list);
+
+      if (isSupabaseConfigured && supabase) {
+        try {
+          await supabase.from('advertisement_orders').update({
+            status,
+            start_date: status === 'approved' ? start.toISOString() : null,
+            end_date: status === 'approved' ? end.toISOString() : null,
+            approved_at: status === 'approved' ? new Date().toISOString() : null
+          }).eq('id', id);
+        } catch (err) {
+          console.error("DB error updating ad order status:", err);
+        }
+      }
+    }
+  },
+
+  async incrementAdViews(id: string): Promise<void> {
+    const list = loadData<AdvertisementOrder[]>('gh_advertisement_orders', []);
+    const idx = list.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      list[idx].views = (list[idx].views || 0) + 1;
+      saveData('gh_advertisement_orders', list);
+    }
+  },
+
+  async incrementAdClicks(id: string): Promise<void> {
+    const list = loadData<AdvertisementOrder[]>('gh_advertisement_orders', []);
+    const idx = list.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      list[idx].clicks = (list[idx].clicks || 0) + 1;
+      saveData('gh_advertisement_orders', list);
+      await this.trackAnalyticsEvent('ad_click', list[idx].user_id, id, `Self ad clicked: ${list[idx].ad_type}`);
+    }
+  },
+
+  async getBannerAds(): Promise<BannerAd[]> {
+    let list: BannerAd[] = [];
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('banner_ads').select('*');
+        if (!error && data) {
+          list = data;
+        }
+      } catch (err) {
+        console.error("DB error reading banners:", err);
+      }
+    }
+    if (list.length === 0) {
+      list = loadData<BannerAd[]>('gh_banner_ads', []);
+    }
+    if (list.length === 0) {
+      list = [
+        {
+          id: 'b_top_default',
+          slot_type: 'top_banner',
+          title: 'Join the Ultimate Championship Cup 2026',
+          image_url: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=1200&auto=format&fit=crop&q=80',
+          link_url: '#/tournaments',
+          active: true,
+          start_date: new Date().toISOString(),
+          end_date: new Date(Date.now() + 30*24*60*60*1000).toISOString(),
+          views: 1250,
+          clicks: 145,
+          ctr: 11.6,
+          created_at: new Date().toISOString()
+        },
+        {
+          id: 'b_side_default',
+          slot_type: 'sidebar_banner',
+          title: 'Upgrade to Platinum Legendary Rank',
+          image_url: 'https://images.unsplash.com/photo-1614064641938-3bbee52942c7?w=400&auto=format&fit=crop&q=80',
+          link_url: '#/membership',
+          active: true,
+          start_date: new Date().toISOString(),
+          end_date: new Date(Date.now() + 60*24*60*60*1000).toISOString(),
+          views: 940,
+          clicks: 86,
+          ctr: 9.1,
+          created_at: new Date().toISOString()
+        }
+      ];
+      saveData('gh_banner_ads', list);
+    }
+    return list.map(item => ({
+      ...item,
+      ctr: item.views > 0 ? parseFloat(((item.clicks / item.views) * 100).toFixed(1)) : 0
+    }));
+  },
+
+  async saveBannerAd(ad: Omit<BannerAd, 'views' | 'clicks' | 'ctr' | 'created_at' | 'id'> & { id?: string }): Promise<BannerAd> {
+    const list = loadData<BannerAd[]>('gh_banner_ads', []);
+    const existingIdx = ad.id ? list.findIndex(x => x.id === ad.id) : -1;
+    
+    let resolvedAd: BannerAd;
+    if (existingIdx !== -1) {
+      resolvedAd = {
+        ...list[existingIdx],
+        ...ad,
+        id: ad.id!
+      };
+      list[existingIdx] = resolvedAd;
+    } else {
+      resolvedAd = {
+        ...ad,
+        id: ad.id || 'b_' + Math.random().toString(36).substr(2, 9),
+        views: 0,
+        clicks: 0,
+        ctr: 0,
+        created_at: new Date().toISOString()
+      };
+      list.push(resolvedAd);
+    }
+    saveData('gh_banner_ads', list);
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('banner_ads').upsert(resolvedAd);
+      } catch (err) {
+        console.error("DB error saving banner ad:", err);
+      }
+    }
+    return resolvedAd;
+  },
+
+  async deleteBannerAd(id: string): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('banner_ads').delete().eq('id', id);
+      } catch (err) {
+        console.error("DB error deleting banner:", err);
+      }
+    }
+    const list = loadData<BannerAd[]>('gh_banner_ads', []);
+    const filtered = list.filter(item => item.id !== id);
+    saveData('gh_banner_ads', filtered);
+  },
+
+  async incrementBannerViews(id: string): Promise<void> {
+    const list = loadData<BannerAd[]>('gh_banner_ads', []);
+    const idx = list.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      list[idx].views = (list[idx].views || 0) + 1;
+      saveData('gh_banner_ads', list);
+    }
+  },
+
+  async incrementBannerClicks(id: string): Promise<void> {
+    const list = loadData<BannerAd[]>('gh_banner_ads', []);
+    const idx = list.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      list[idx].clicks = (list[idx].clicks || 0) + 1;
+      saveData('gh_banner_ads', list);
+      await this.trackAnalyticsEvent('ad_click', null, id, `Banner ad clicked: ${list[idx].title}`);
+    }
+  },
+
+  async getInvoices(): Promise<Invoice[]> {
+    let list: Invoice[] = [];
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('invoices').select('*');
+        if (!error && data) {
+          list = data;
+        }
+      } catch (err) {
+        console.error("DB error fetching invoices:", err);
+      }
+    }
+    if (list.length === 0) {
+      list = loadData<Invoice[]>('gh_invoices', []);
+    }
+    if (list.length === 0) {
+      list = [
+        {
+          id: 'inv_101',
+          invoice_number: 'INV-2026-0001',
+          user_id: 'sample_u1',
+          amount: 99,
+          status: 'paid',
+          description: 'Silver Membership Upgrade - Recurring Month 1',
+          item_type: 'membership',
+          billing_name: 'Alex Rigger',
+          billing_email: 'alex.rig@gmail.com',
+          created_at: new Date(Date.now() - 5*24*60*60*1000).toISOString()
+        },
+        {
+          id: 'inv_102',
+          invoice_number: 'INV-2026-0002',
+          user_id: 'sample_u2',
+          amount: 450,
+          status: 'paid',
+          description: 'Diamond purchase (Bundle Sparkle +500 diamonds)',
+          item_type: 'diamond_purchase',
+          billing_name: 'Damon S',
+          billing_email: 'damons@esports.com',
+          created_at: new Date(Date.now() - 2*24*60*60*1000).toISOString()
+        }
+      ];
+      saveData('gh_invoices', list);
+    }
+    return list;
+  },
+
+  async createInvoice(invoice: Omit<Invoice, 'id' | 'invoice_number' | 'created_at'>): Promise<Invoice> {
+    const suffix = Math.floor(100000 + Math.random() * 900000);
+    const invoiceNum = `INV-${new Date().getFullYear()}-${suffix}`;
+    
+    const newInvoice: Invoice = {
+      ...invoice,
+      id: 'inv_' + Math.random().toString(36).substr(2, 9),
+      invoice_number: invoiceNum,
+      created_at: new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('invoices').insert(newInvoice);
+      } catch (err) {
+        console.error("DB error entering invoice:", err);
+      }
+    }
+
+    const list = loadData<Invoice[]>('gh_invoices', []);
+    const isDup = list.some(x => x.user_id === invoice.user_id && x.amount === invoice.amount && x.description === invoice.description && (Date.now() - new Date(x.created_at).getTime() < 120000));
+    if (!isDup) {
+      list.push(newInvoice);
+      saveData('gh_invoices', list);
+    }
+    return newInvoice;
+  },
+
+  async getAnalyticsEvents(): Promise<AnalyticsEvent[]> {
+    let list: AnalyticsEvent[] = [];
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.from('analytics_events').select('*');
+        if (!error && data) {
+          list = data;
+        }
+      } catch (err) {
+        console.error("DB error loading analytics:", err);
+      }
+    }
+    if (list.length === 0) {
+      list = loadData<AnalyticsEvent[]>('gh_analytics_events', []);
+    }
+    if (list.length === 0) {
+      const start = Date.now();
+      list = [
+        { id: 'ev_1', event_type: 'user_active', user_id: 'u1', created_at: new Date(start - 1000000).toISOString() },
+        { id: 'ev_2', event_type: 'user_new', user_id: 'u2', created_at: new Date(start - 2000000).toISOString() },
+        { id: 'ev_3', event_type: 'user_returning', user_id: 'u3', created_at: new Date(start - 3000000).toISOString() }
+      ];
+      saveData('gh_analytics_events', list);
+    }
+    return list;
+  },
+
+  async trackAnalyticsEvent(
+    eventType: AnalyticsEvent['event_type'],
+    userId?: string | null,
+    targetId?: string | null,
+    metadata?: string | null
+  ): Promise<void> {
+    const newEvent: AnalyticsEvent = {
+      id: 'evt_' + Math.random().toString(36).substr(2, 9),
+      event_type: eventType,
+      user_id: userId || null,
+      target_id: targetId || null,
+      metadata: metadata || null,
+      created_at: new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('analytics_events').insert(newEvent);
+      } catch (e) {}
+    }
+
+    const list = loadData<AnalyticsEvent[]>('gh_analytics_events', []);
+    list.push(newEvent);
+    saveData('gh_analytics_events', list);
   }
 };
 

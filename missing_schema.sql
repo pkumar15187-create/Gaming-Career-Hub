@@ -293,3 +293,43 @@ create policy "Allow full actions on tournament matches" on public.tournament_ma
     for all using (true) with check (true);
 
 
+-- SPONSOR MARKETPLACE & ANALYTICS TABLES
+create table if not exists public.sponsors (
+    id uuid primary key default gen_random_uuid(),
+    company_name text not null,
+    logo_url text,
+    website_url text,
+    banner_url text,
+    description text,
+    active boolean default true,
+    start_date date,
+    end_date date,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    views integer default 0
+);
+
+create table if not exists public.sponsor_clicks (
+    id uuid primary key default gen_random_uuid(),
+    sponsor_id uuid references public.sponsors(id) on delete cascade,
+    user_id uuid references public.users(id) on delete set null,
+    clicked_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.sponsors enable row level security;
+alter table public.sponsor_clicks enable row level security;
+
+create policy "Allow select sponsors" on public.sponsors
+    for select using (true);
+create policy "Allow insert sponsors admin" on public.sponsors
+    for insert with check (true);
+create policy "Allow update sponsors admin" on public.sponsors
+    for update using (true);
+create policy "Allow delete sponsors admin" on public.sponsors
+    for delete using (true);
+
+create policy "Allow select sponsor_clicks" on public.sponsor_clicks
+    for select using (true);
+create policy "Allow insert sponsor_clicks" on public.sponsor_clicks
+    for insert with check (true);
+
+

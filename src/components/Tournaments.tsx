@@ -83,6 +83,13 @@ export default function Tournaments({
   const [contactEmail, setContactEmail] = useState(currentUser?.email || '');
   const [txnId, setTxnId] = useState('');
   const [screenshotUrl, setScreenshotUrl] = useState('');
+  const [tournamentCouponCode, setTournamentCouponCode] = useState('');
+  const [tourneyDiscountSummary, setTourneyDiscountSummary] = useState<{
+    original: number;
+    discount: number;
+    final: number;
+    savings: number;
+  } | null>(null);
   const [showPlayersList, setShowPlayersList] = useState(false);
 
   // Tournament Bracket Matches state
@@ -231,6 +238,45 @@ export default function Tournaments({
     }
   };
 
+  const handleApplyTourneyCoupon = async () => {
+    if (!selectedTournament) return;
+    
+    const entryFeeText = selectedTournament.entry_fee || selectedTournament.entryFee || 'Free';
+    const parseFeeDiamonds = (feeStr: string | undefined): number => {
+      if (!feeStr) return 0;
+      const normalized = feeStr.trim().toLowerCase();
+      if (normalized === 'free' || normalized === '0' || normalized === 'free entry') return 0;
+      const match = normalized.match(/\d+/);
+      return match ? parseInt(match[0], 10) : 0;
+    };
+    
+    const basePrice = parseFeeDiamonds(entryFeeText);
+    if (basePrice <= 0) {
+      addToast("This is a free tournament! You don't need a discount coupon.", "warning");
+      return;
+    }
+
+    const code = tournamentCouponCode.trim().toUpperCase();
+    if (!code) {
+      addToast("Please input a valid promo or coupon code.", "warning");
+      return;
+    }
+
+    const res = await supabaseService.validatePromoCode(code, currentUser?.id || '', 'tournament_entry', basePrice);
+    if (res.isValid) {
+      setTourneyDiscountSummary({
+        original: basePrice,
+        discount: res.discountAmount,
+        final: res.finalAmount,
+        savings: res.discountAmount
+      });
+      addToast(res.message, "success");
+    } else {
+      setTourneyDiscountSummary(null);
+      addToast(res.message, "error");
+    }
+  };
+
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTournament) return;
@@ -256,13 +302,26 @@ export default function Tournaments({
       return match ? parseInt(match[0], 10) : 0;
     };
 
-    const feeDiamonds = parseFeeDiamonds(entryFeeText);
+    const baseFeeDiamonds = parseFeeDiamonds(entryFeeText);
+    let feeDiamonds = baseFeeDiamonds;
+    let executedCouponCode: string | undefined = undefined;
+
+    if (requiresFee && baseFeeDiamonds > 0 && tournamentCouponCode.trim()) {
+      const promoRes = await supabaseService.executePromoUsage(tournamentCouponCode.trim(), currentUser.id, 'tournament_entry', baseFeeDiamonds);
+      if (promoRes.status === 'success') {
+        feeDiamonds = promoRes.finalAmount;
+        executedCouponCode = tournamentCouponCode.trim().toUpperCase();
+      } else {
+        console.warn("[Coupon Engine] Promocode execution failed. Standard entry fee applied.");
+      }
+    }
+
     const userDiamonds = currentUser ? (currentUser.diamonds || 0) : 0;
 
     if (requiresFee) {
-      if (feeDiamonds > 0) {
+      if (baseFeeDiamonds > 0) {
         if (userDiamonds < feeDiamonds) {
-          addToast(`Insufficient Diamonds! You need ${feeDiamonds} Diamonds but only have ${userDiamonds}. Buy Diamonds to join!`, "warning");
+          addToast(`Insufficient Diamonds! You need ${feeDiamonds} Diamonds (after discount) but only have ${userDiamonds}. Buy Diamonds to join!`, "warning");
           return;
         }
       } else {
@@ -284,13 +343,15 @@ export default function Tournaments({
       }
     }
 
+    const userPaidNote = executedCouponCode ? `Paid via Diamonds (Coupon: ${executedCouponCode})` : 'diamonds';
+
     const regPayload = {
       tournament_id: selectedTournament.id,
       registration_type: selectedRegType,
       team_id: selectedRegType === 'team' ? selectedTeamId : null,
-      payment_status: (requiresFee ? (feeDiamonds > 0 ? 'paid' : 'pending') : 'unneeded') as 'pending' | 'paid' | 'unneeded' | 'rejected',
-      transaction_id: requiresFee ? (feeDiamonds > 0 ? `diamonds-${Date.now()}` : txnId) : null,
-      payment_screenshot_url: requiresFee ? (feeDiamonds > 0 ? 'diamonds' : screenshotUrl) : null,
+      payment_status: (requiresFee ? (baseFeeDiamonds > 0 ? 'paid' : 'pending') : 'unneeded') as 'pending' | 'paid' | 'unneeded' | 'rejected',
+      transaction_id: requiresFee ? (baseFeeDiamonds > 0 ? `diamonds-${Date.now()}` : txnId) : null,
+      payment_screenshot_url: requiresFee ? (baseFeeDiamonds > 0 ? userPaidNote : screenshotUrl) : null,
     };
 
     try {
@@ -300,6 +361,8 @@ export default function Tournaments({
       setSelectedTeamId('');
       setTxnId('');
       setScreenshotUrl('');
+      setTournamentCouponCode('');
+      setTourneyDiscountSummary(null);
       
       // update state in selected tournament modal locally as well
       setSelectedTournament(prev => {
@@ -484,9 +547,12 @@ export default function Tournaments({
                   {tourney.banner_url ? (
                     <img 
                       src={tourney.banner_url} 
-                      alt={tourney.title}
+                      alt={tourney.title || "Tournament banner"}
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-505"
+                      width={380}
+                      height={176}
+                      loading="lazy"
                     />
                   ) : (
                     <div className={`w-full h-full ${bannerFallbackGradient} flex items-center justify-center p-6 relative`}>
@@ -1358,6 +1424,37 @@ export default function Tournaments({
                   <p className="text-[10px] text-zinc-500 mt-1.5 font-sans leading-relaxed">We will send match lobbies, access codes, and stream brackets here.</p>
                 </div>
 
+                {/* Promo Coupon Application Block */}
+                {selectedTournament.entryFee && selectedTournament.entryFee.toLowerCase() !== 'free' && selectedTournament.entryFee !== '0' && (
+                  <div className="p-3.5 bg-zinc-950/60 border border-zinc-800 rounded-xl space-y-2">
+                    <label className="block text-[10px] font-mono tracking-widest text-zinc-500 uppercase font-bold">Apply Coupon Code</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="e.g. BATTLE20, TOURNEY50"
+                        className="flex-grow bg-zinc-900 border border-zinc-800 text-xs px-3 py-1.5 text-white focus:outline-none focus:border-emerald-500 rounded-xl font-mono uppercase"
+                        value={tournamentCouponCode}
+                        onChange={(e) => setTournamentCouponCode(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleApplyTourneyCoupon}
+                        className="bg-zinc-850 hover:bg-zinc-800 border border-zinc-700 px-3 py-1.5 text-[10px] font-mono text-zinc-350 rounded-xl font-bold transition-all cursor-pointer"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                    {tourneyDiscountSummary ? (
+                      <div className="flex justify-between items-center text-[10px] font-mono mt-1 text-emerald-400">
+                        <span>Original: {tourneyDiscountSummary.original} Fee</span>
+                        <span>Discounted Pay: <strong className="font-extrabold">{tourneyDiscountSummary.final}</strong></span>
+                      </div>
+                    ) : (
+                      <p className="text-[9px] text-zinc-500 font-mono">Standard rates apply unless a valid active coupon is entered.</p>
+                    )}
+                  </div>
+                )}
+
                 {/* Entry fee payments section */}
                 {selectedTournament.entryFee && selectedTournament.entryFee.toLowerCase() !== 'free' && selectedTournament.entryFee !== '0' && (
                   <div className="bg-zinc-950 p-4 rounded-xl border border-rose-500/10 space-y-3.5">
@@ -1377,8 +1474,8 @@ export default function Tournaments({
                         className="w-32 h-32 rounded-lg border border-zinc-800 p-1.5 bg-white" 
                       />
                       
-                      <div className="text-center">
-                        <p className="text-[10px] font-mono text-zinc-400">UPI ID: <strong className="text-white text-[11px] font-sans break-all">{adminSettings?.upiId || "esportsgate@ybl"}</strong></p>
+                      <div className="text-center mt-1">
+                        <p className="text-[10px] font-mono text-zinc-500">Scan code above to secure instant seat</p>
                       </div>
                     </div>
 
